@@ -1,0 +1,7 @@
+version: 1
+
+project:
+  name: spot-rides
+  repository: github.com/rkantha/spot-rides
+
+features: {}

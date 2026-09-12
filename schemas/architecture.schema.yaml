@@ -1,0 +1,241 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://example.com/schemas/architecture.schema.yaml"
+
+title: Architecture
+description: Technical architecture for a feature.
+type: object
+
+required:
+  - id
+  - type
+  - feature_id
+  - version
+  - status
+  - proposed_solution
+  - components
+
+properties:
+
+  id:
+    type: string
+    pattern: "^ARCH-[0-9]{3,}$"
+
+  type:
+    type: string
+    const: architecture
+
+  feature_id:
+    type: string
+    pattern: "^FEAT-[0-9]{3,}$"
+
+  version:
+    type: integer
+    minimum: 1
+
+  status:
+    type: string
+    enum:
+      - draft
+      - ready
+      - approved
+      - blocked
+      - rejected
+
+  title:
+    type: string
+
+  context:
+    type: string
+
+  current_state:
+    type: string
+
+  proposed_solution:
+    type: string
+    minLength: 1
+
+  components:
+    type: array
+    items:
+      type: object
+      required:
+        - id
+        - name
+        - responsibility
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        responsibility:
+          type: string
+        changes:
+          type: array
+          items:
+            type: string
+
+  data_changes:
+    type: array
+    items:
+      type: object
+      required:
+        - type
+        - description
+      properties:
+        type:
+          type: string
+          enum:
+            - table
+            - collection
+            - index
+            - migration
+            - cache
+            - storage
+            - other
+        name:
+          type: string
+        description:
+          type: string
+
+  apis:
+    type: array
+    items:
+      type: object
+      required:
+        - method
+        - path
+      properties:
+        method:
+          type: string
+        path:
+          type: string
+        purpose:
+          type: string
+        request:
+          type: object
+        response:
+          type: object
+        authentication:
+          type: string
+
+  integrations:
+    type: array
+    items:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        purpose:
+          type: string
+        failure_mode:
+          type: string
+
+  security:
+    type: object
+    properties:
+      authentication:
+        type: string
+      authorization:
+        type: string
+      threats:
+        type: array
+        items:
+          type: string
+      mitigations:
+        type: array
+        items:
+          type: string
+
+  observability:
+    type: object
+    properties:
+      logs:
+        type: array
+        items:
+          type: string
+      metrics:
+        type: array
+        items:
+          type: string
+      traces:
+        type: array
+        items:
+          type: string
+      alerts:
+        type: array
+        items:
+          type: string
+
+  performance:
+    type: object
+    properties:
+      expected_load:
+        type: string
+      latency_requirements:
+        type: string
+      scalability:
+        type: string
+
+  migration:
+    type: object
+    properties:
+      required:
+        type: boolean
+      strategy:
+        type: string
+      rollback:
+        type: string
+
+  risks:
+    type: array
+    items:
+      type: object
+      required:
+        - id
+        - description
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        severity:
+          type: string
+          enum:
+            - critical
+            - high
+            - medium
+            - low
+        mitigation:
+          type: string
+
+  decisions:
+    type: array
+    items:
+      type: object
+      required:
+        - id
+        - decision
+        - rationale
+      properties:
+        id:
+          type: string
+        decision:
+          type: string
+        rationale:
+          type: string
+        alternatives:
+          type: array
+          items:
+            type: string
+
+  assumptions:
+    type: array
+    items:
+      type: string
+
+  open_decisions:
+    type: array
+    items:
+      type: string

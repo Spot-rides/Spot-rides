@@ -1,0 +1,11 @@
+---
+description: Planning discipline rules
+globs: ["docs/plans/**"]
+---
+
+# Planning Rules
+
+- Use `schemas/plan.schema.yaml` and `schemas/task.schema.yaml`.
+- Tasks must have: id, title, agent, dependencies, estimate (S/M/L), status.
+- Order tasks by dependency before assigning.
+- Save plans to `docs/plans/YYYY-MM-DD-<slug>.md`.

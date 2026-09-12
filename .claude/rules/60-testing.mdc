@@ -1,0 +1,12 @@
+---
+description: Testing discipline rules
+globs: ["backend/**/tests/**", "frontend/**/*.test.*", "frontend/**/*.spec.*"]
+---
+
+# Testing Rules
+
+- Backend: pytest + pytest-django. Tests in `<app>/tests/`.
+- Frontend: Jest + React Native Testing Library.
+- Every new endpoint must have: success, validation error, and auth error tests.
+- Every new component must have: render, interaction, and error state tests.
+- Coverage must not decrease on merge.

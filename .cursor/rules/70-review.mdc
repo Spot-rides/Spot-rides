@@ -1,0 +1,12 @@
+---
+description: Code review discipline rules
+globs: ["docs/reviews/**"]
+---
+
+# Review Rules
+
+- Use `schemas/review.schema.yaml` for all review docs.
+- Possible verdicts: APPROVE, REQUEST_CHANGES, BLOCK.
+- BLOCK if: security issue, data loss risk, no tests for changed code.
+- REQUEST_CHANGES if: style, naming, missing edge case, minor design issue.
+- Save to `docs/reviews/YYYY-MM-DD-<slug>-review.md`.

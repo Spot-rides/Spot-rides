@@ -1,0 +1,147 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://example.com/schemas/feature-state.schema.yaml"
+
+title: Feature State
+description: Runtime state of an AI-managed feature workflow.
+type: object
+
+required:
+  - feature_id
+  - name
+  - status
+  - stages
+
+properties:
+
+  feature_id:
+    type: string
+    pattern: "^FEAT-[0-9]{3,}$"
+
+  name:
+    type: string
+
+  status:
+    type: string
+    enum:
+      - created
+      - requirements
+      - architecture
+      - planning
+      - implementation
+      - testing
+      - review
+      - security
+      - ready
+      - blocked
+      - cancelled
+      - failed
+
+  current_agent:
+    type:
+      - string
+      - "null"
+
+  current_task:
+    type:
+      - string
+      - "null"
+
+  stages:
+    type: object
+
+    required:
+      - requirements
+      - architecture
+      - planning
+      - implementation
+      - testing
+      - code_review
+      - security
+
+    properties:
+
+      requirements:
+        $ref: "#/$defs/stage"
+
+      architecture:
+        $ref: "#/$defs/stage"
+
+      planning:
+        $ref: "#/$defs/stage"
+
+      implementation:
+        $ref: "#/$defs/stage"
+
+      testing:
+        $ref: "#/$defs/stage"
+
+      code_review:
+        $ref: "#/$defs/stage"
+
+      security:
+        $ref: "#/$defs/stage"
+
+  tasks:
+    type: object
+    additionalProperties:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+        agent:
+          type: string
+        updated_at:
+          type: string
+
+  history:
+    type: array
+    items:
+      type: object
+      required:
+        - timestamp
+        - event
+      properties:
+        timestamp:
+          type: string
+        event:
+          type: string
+        agent:
+          type: string
+        task:
+          type: string
+        message:
+          type: string
+
+$defs:
+
+  stage:
+    type: object
+    required:
+      - status
+    properties:
+      status:
+        type: string
+        enum:
+          - pending
+          - in_progress
+          - passed
+          - failed
+          - blocked
+          - skipped
+
+      artifact:
+        type:
+          - string
+          - "null"
+
+      completed_at:
+        type:
+          - string
+          - "null"
+
+      agent:
+        type:
+          - string
+          - "null"

@@ -1,0 +1,25 @@
+---
+description: AI dev team — master orchestration rules
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Team Rules
+
+This workspace uses a structured AI development team. Each agent has a defined role and produces outputs conforming to schemas in `schemas/`.
+
+## Agent Roster
+- product-manager → requirements
+- architect → system design
+- planner → task breakdown
+- frontend-engineer → Expo/React Native
+- backend-engineer → Django/DRF
+- test-engineer → tests
+- code-reviewer → reviews
+- security-reviewer → security audits
+
+## Golden Rules
+1. No code without an approved requirement.
+2. No implementation without an approved architecture.
+3. No merge without passing review.
+4. All decisions persisted to `docs/`.

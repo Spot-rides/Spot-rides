@@ -1,0 +1,126 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://example.com/schemas/security-review.schema.yaml"
+
+title: Security Review
+description: Independent security assessment.
+type: object
+
+required:
+  - id
+  - type
+  - feature_id
+  - reviewer
+  - status
+  - findings
+
+properties:
+
+  id:
+    type: string
+    pattern: "^SEC-[0-9]{3,}$"
+
+  type:
+    type: string
+    const: security-review
+
+  feature_id:
+    type: string
+    pattern: "^FEAT-[0-9]{3,}$"
+
+  reviewer:
+    type: string
+    const: security-reviewer
+
+  status:
+    type: string
+    enum:
+      - approved
+      - changes_requested
+      - blocked
+
+  assets:
+    type: array
+    items:
+      type: string
+
+  actors:
+    type: array
+    items:
+      type: string
+
+  trust_boundaries:
+    type: array
+    items:
+      type: string
+
+  attack_surfaces:
+    type: array
+    items:
+      type: string
+
+  threats:
+    type: array
+    items:
+      type: object
+      required:
+        - id
+        - threat
+        - mitigation
+      properties:
+        id:
+          type: string
+        threat:
+          type: string
+        mitigation:
+          type: string
+        residual_risk:
+          type: string
+
+  findings:
+    type: array
+    items:
+      type: object
+      required:
+        - id
+        - severity
+        - title
+        - description
+      properties:
+
+        id:
+          type: string
+
+        severity:
+          type: string
+          enum:
+            - critical
+            - high
+            - medium
+            - low
+            - informational
+
+        title:
+          type: string
+
+        description:
+          type: string
+
+        location:
+          type: string
+
+        evidence:
+          type: string
+
+        recommendation:
+          type: string
+
+        blocking:
+          type: boolean
+
+        resolved:
+          type: boolean
+
+  residual_risk:
+    type: array
+    items:
+      type: string

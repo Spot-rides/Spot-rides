@@ -1,0 +1,12 @@
+---
+description: Security review discipline rules
+globs: ["docs/reviews/**"]
+---
+
+# Security Rules
+
+- OWASP Top 10 must be checked for every feature touching auth, payments, or PII.
+- Use `schemas/security-review.schema.yaml`.
+- Possible verdicts: PASS, WARN, BLOCK.
+- BLOCK if: credentials exposed, SQL injection possible, broken auth.
+- Save to `docs/reviews/YYYY-MM-DD-<slug>-security.md`.

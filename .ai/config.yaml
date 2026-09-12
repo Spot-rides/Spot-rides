@@ -1,0 +1,21 @@
+project: spot-rides
+version: "1.0"
+
+team:
+  - product-manager
+  - architect
+  - planner
+  - frontend-engineer
+  - backend-engineer
+  - test-engineer
+  - code-reviewer
+  - security-reviewer
+
+workflows:
+  feature: workflows/feature.md
+  bugfix: workflows/bugfix.md
+  refactor: workflows/refactor.md
+
+schemas_dir: schemas/
+templates_dir: templates/
+docs_dir: docs/

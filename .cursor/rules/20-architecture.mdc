@@ -1,0 +1,12 @@
+---
+description: Architecture discipline rules
+globs: ["docs/architecture/**", "docs/decisions/**"]
+---
+
+# Architecture Rules
+
+- Use `schemas/architecture.schema.yaml` for all architecture docs.
+- Every design must include: context, decision, alternatives considered, trade-offs.
+- ADRs go to `docs/decisions/YYYY-MM-DD-<slug>.md`.
+- System diagrams go to `docs/architecture/`.
+- Prefer Mermaid for diagrams.

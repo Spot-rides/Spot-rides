@@ -1,0 +1,11 @@
+---
+description: Requirements discipline rules
+globs: ["docs/requirements/**"]
+---
+
+# Requirements Rules
+
+- Use `schemas/requirement.schema.yaml` for all requirement docs.
+- Every requirement must have: title, user stories, acceptance criteria, out-of-scope.
+- Acceptance criteria in Given/When/Then format.
+- Save to `docs/requirements/YYYY-MM-DD-<slug>.md`.

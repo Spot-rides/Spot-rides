@@ -1,0 +1,14 @@
+---
+description: Backend engineering rules
+globs: ["backend/**"]
+---
+
+# Backend Rules
+
+- Stack: Django 6.1, DRF 3.18, PostgreSQL.
+- All endpoints under `/api/` prefix.
+- Use ViewSets + Routers for CRUD resources.
+- No raw SQL — use ORM. Parameterised queries only if raw SQL is unavoidable.
+- Migrations must be generated for every model change.
+- `python manage.py check` must pass before any commit.
+- Credentials via environment variables (python-decouple). Never hardcode secrets.

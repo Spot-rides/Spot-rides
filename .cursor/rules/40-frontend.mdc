@@ -1,0 +1,13 @@
+---
+description: Frontend engineering rules
+globs: ["frontend/**"]
+---
+
+# Frontend Rules
+
+- Stack: Expo SDK 57, React Native 0.86, React 19.
+- Screens in `frontend/screens/`, components in `frontend/components/`.
+- TypeScript preferred for new files.
+- No inline styles — use StyleSheet.create().
+- Every screen must handle: loading, error, empty, and data states.
+- API base URL via environment config, never hardcoded.
