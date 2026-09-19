@@ -1,4 +1,16 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(./venv/Scripts/python.exe manage.py check)",
+      "Bash(where python *)",
+      "Bash(./venv/Scripts/python.exe manage.py show_urls)",
+      "Bash(./venv/Scripts/python.exe -c \"import django; django.setup\\(\\)\")",
+      "Bash(DJANGO_SETTINGS_MODULE=config.settings ./venv/Scripts/python.exe -c ' *)",
+      "Bash(rtk wc *)",
+      "Bash(sed -i '32,52 s/| pending |/| complete |/' docs/plans/PLAN-001-otp-phone-authentication.md)",
+      "Bash(rtk grep *)"
+    ]
+  },
   "enabledPlugins": {
     "expo@claude-plugins-official": true
   }
