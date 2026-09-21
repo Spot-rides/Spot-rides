@@ -4,4 +4,22 @@ project:
   name: spot-rides
   repository: github.com/rkantha/spot-rides
 
+active_features:
+  - id: FEAT-001
+    title: OTP phone authentication
+    status: blocked
+    stages:
+      requirements: passed
+      architecture: passed
+      planning: passed
+      implementation: in_progress
+      testing: not_started
+      code_review: not_started
+      security: not_started
+    blockers:
+      - "Implementation gate not met: plan tasks still marked 'pending' in docs/plans/PLAN-001-otp-phone-authentication.md (task statuses not advanced to 'complete')."
+      - "Testing stage has not run: no docs/reviews/FEAT-001-otp-phone-authentication-testing.md artifact exists."
+      - "Code review stage has not run: no docs/reviews/FEAT-001-otp-phone-authentication-code-review.md artifact exists."
+      - "Security review stage has not run: no docs/reviews/FEAT-001-otp-phone-authentication-security-review.md artifact exists."
+
 features: {}
