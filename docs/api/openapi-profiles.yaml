@@ -1,0 +1,1019 @@
+openapi: 3.0.3
+info:
+  title: Spot Rides — Onboarding API (profiles)
+  description: |
+    User onboarding flow endpoints for the Spot Rides platform.
+
+    ## Onboarding flow
+
+    After completing OTP authentication (FEAT-001), new users must complete onboarding:
+
+    1. `GET /api/onboarding/status/` — check current onboarding state and next required step
+    2. `POST /api/onboarding/role/` — select active role: `driver` or `passenger`
+    3. `POST /api/onboarding/profile/` — submit personal details (first name, last name, age, gender)
+    4. **For drivers only**: `POST /api/onboarding/driver/dl/` — submit Indian driving licence number for verification
+    5. **For drivers in pending state**: `GET /api/onboarding/driver/dl/status/` — poll for DL verification result
+
+    ### Role switching (post-onboarding)
+
+    Users can switch between driver and passenger roles at any time:
+    - `PATCH /api/profile/role/` — switch active role
+    - Switching to passenger: always immediate
+    - Switching to driver: requires verified DL
+
+    ### Onboarding gate
+
+    All endpoints (except auth, onboarding, and webhook endpoints) require `onboarding_status = COMPLETE`.
+    This gate is controlled by the `ONBOARDING_GATE_ENABLED` feature flag (default: false).
+
+    ## Response envelope
+
+    Every response uses the unified envelope:
+    ```json
+    {
+      "success": true,
+      "message": "Role selected successfully.",
+      "data": { },
+      "error": null,
+      "meta": { "request_id": "…", "timestamp": "…" }
+    }
+    ```
+
+  version: 1.0.0
+  contact:
+    name: Spot Rides Engineering
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: https://api.spotrides.com
+    description: Production
+
+tags:
+  - name: Onboarding
+    description: New user onboarding flow (role selection, profile, DL verification)
+  - name: Driver Verification
+    description: Driving licence verification for drivers
+  - name: Profile
+    description: User profile management and role switching
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token from OTP authentication
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # -- Shared response envelope ---------------------------------------------
+    ResponseMeta:
+      type: object
+      required: [request_id, timestamp]
+      properties:
+        request_id:
+          type: string
+          nullable: true
+          example: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-09-23T10:00:00Z"
+
+    SuccessEnvelope:
+      type: object
+      required: [success, message, data, error, meta]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+          nullable: true
+        data:
+          nullable: true
+        error:
+          nullable: true
+          enum: [null]
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+    ErrorEnvelope:
+      type: object
+      required: [success, message, data, error, meta]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        message:
+          type: string
+        data:
+          nullable: true
+          enum: [null]
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+    ErrorDetail:
+      type: object
+      required: [code, detail]
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: invalid_age
+        detail:
+          type: string
+          description: Human-readable error message
+          example: Age must be between 18 and 80
+        fields:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        retry_after:
+          type: integer
+          nullable: true
+
+    # -- Onboarding -----------------------------------------------------------
+    OnboardingStatusResponse:
+      type: object
+      required: [onboarding_status, active_role, next_step, profile_complete, dl_verification_status]
+      properties:
+        onboarding_status:
+          type: string
+          enum: [NOT_STARTED, ROLE_SELECTED, AWAITING_DL, PENDING_VERIFICATION, COMPLETE]
+          example: ROLE_SELECTED
+        active_role:
+          type: string
+          nullable: true
+          enum: [DRIVER, PASSENGER, null]
+          example: PASSENGER
+        next_step:
+          type: string
+          enum: [role_selection, profile, dl_submission, awaiting_verification, none]
+          example: profile
+        profile_complete:
+          type: boolean
+          description: Whether first_name/last_name/age/gender have been set
+          example: false
+        dl_verification_status:
+          type: string
+          nullable: true
+          enum: [PENDING, VERIFIED, REJECTED, null]
+          example: null
+
+    RoleSelectionRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [driver, passenger]
+          description: Active role to set (lowercase in request)
+          example: passenger
+
+    RoleSelectionResponse:
+      type: object
+      required: [active_role, onboarding_status, next_step]
+      properties:
+        active_role:
+          type: string
+          enum: [DRIVER, PASSENGER]
+          example: PASSENGER
+        onboarding_status:
+          type: string
+          enum: [ROLE_SELECTED]
+          example: ROLE_SELECTED
+        next_step:
+          type: string
+          enum: [profile]
+          example: profile
+
+    ProfileDetailsRequest:
+      type: object
+      required: [first_name, last_name, age, gender]
+      properties:
+        first_name:
+          type: string
+          maxLength: 50
+          pattern: "^[\\w\\s'-]+$"
+          example: Priya
+        last_name:
+          type: string
+          maxLength: 50
+          pattern: "^[\\w\\s'-]+$"
+          example: Sharma
+        age:
+          type: integer
+          minimum: 18
+          maximum: 80
+          example: 27
+        gender:
+          type: string
+          enum: [male, female, other, prefer_not_to_say]
+          example: female
+
+    ProfileDetailsResponse:
+      type: object
+      required: [onboarding_status, next_step]
+      properties:
+        onboarding_status:
+          type: string
+          enum: [COMPLETE, AWAITING_DL]
+          description: COMPLETE for passengers, AWAITING_DL for drivers
+          example: COMPLETE
+        next_step:
+          type: string
+          enum: [none, dl_submission]
+          example: none
+
+    DLSubmissionRequest:
+      type: object
+      required: [dl_number]
+      properties:
+        dl_number:
+          type: string
+          maxLength: 20
+          pattern: "^[A-Z]{2}[0-9]{2}[ -]?[0-9]{4}[0-9]{7}$"
+          description: |
+            Indian driving licence number. Format: XX00 0000 0000000
+            (2 state letters, 2-digit RTO code, 4-digit year, 7-digit serial).
+            Spaces/hyphens optional; normalized to uppercase internally.
+          example: "MH01 20110012345"
+
+    DLSubmissionResponse:
+      type: object
+      required: [dl_verification_status, onboarding_status, next_step]
+      properties:
+        dl_verification_status:
+          type: string
+          enum: [VERIFIED, PENDING]
+          example: VERIFIED
+        onboarding_status:
+          type: string
+          enum: [COMPLETE, PENDING_VERIFICATION]
+          example: COMPLETE
+        next_step:
+          type: string
+          enum: [none, awaiting_verification]
+          example: none
+        reference_id:
+          type: string
+          nullable: true
+          description: Provider reference ID for async verification
+          example: mock-a1b2c3d4
+
+    DLStatusResponse:
+      type: object
+      required: [dl_verification_status, onboarding_status, rejection_reason, dl_number_display]
+      properties:
+        dl_verification_status:
+          type: string
+          enum: [PENDING, VERIFIED, REJECTED]
+          example: VERIFIED
+        onboarding_status:
+          type: string
+          enum: [PENDING_VERIFICATION, COMPLETE]
+          example: COMPLETE
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Reason if rejected
+          example: null
+        dl_number_display:
+          type: string
+          description: Last 4 digits of DL number
+          example: "2345"
+
+    RoleSwitchRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [driver, passenger]
+          example: driver
+
+    RoleSwitchResponse:
+      type: object
+      required: [active_role, onboarding_status]
+      properties:
+        active_role:
+          type: string
+          enum: [DRIVER, PASSENGER]
+          example: DRIVER
+        onboarding_status:
+          type: string
+          enum: [COMPLETE, PENDING_VERIFICATION]
+          example: COMPLETE
+        dl_verification_status:
+          type: string
+          nullable: true
+          enum: [VERIFIED, PENDING, null]
+          example: VERIFIED
+
+    WebhookRequest:
+      type: object
+      required: [reference_id, status]
+      properties:
+        reference_id:
+          type: string
+          description: Provider reference ID from DL submission
+          example: mock-a1b2c3d4
+        status:
+          type: string
+          enum: [verified, rejected]
+          example: verified
+        rejection_reason:
+          type: string
+          nullable: true
+          example: null
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            message: Authentication credentials were not provided.
+            data: null
+            error:
+              code: not_authenticated
+              detail: Authentication credentials were not provided.
+              fields: null
+              retry_after: null
+            meta:
+              request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+              timestamp: "2026-09-23T10:00:00Z"
+
+    OnboardingIncomplete:
+      description: Onboarding not complete
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            message: Onboarding is incomplete. Complete onboarding to access this resource.
+            data: null
+            error:
+              code: onboarding_incomplete
+              detail: Onboarding is incomplete. Complete onboarding to access this resource.
+              fields: null
+              retry_after: null
+            meta:
+              request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+              timestamp: "2026-09-23T10:00:00Z"
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+paths:
+
+  # -- Onboarding status ------------------------------------------------------
+  /api/onboarding/status/:
+    get:
+      summary: Get onboarding status
+      description: |
+        Returns the current onboarding state and the next required step.
+        Accessible to all authenticated users regardless of onboarding status.
+      operationId: onboarding_status
+      tags: [Onboarding]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current onboarding state
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/OnboardingStatusResponse'
+              example:
+                success: true
+                message: null
+                data:
+                  onboarding_status: NOT_STARTED
+                  active_role: null
+                  next_step: role_selection
+                  profile_complete: false
+                  dl_verification_status: null
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # -- Role selection ---------------------------------------------------------
+  /api/onboarding/role/:
+    post:
+      summary: Select user role
+      description: |
+        Set the active role during onboarding. Must be called before profile submission.
+        Can only be called once — subsequent calls return 409 Conflict.
+      operationId: role_select
+      tags: [Onboarding]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSelectionRequest'
+            example:
+              role: passenger
+      responses:
+        '200':
+          description: Role selected successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/RoleSelectionResponse'
+              example:
+                success: true
+                message: Role selected successfully.
+                data:
+                  active_role: PASSENGER
+                  onboarding_status: ROLE_SELECTED
+                  next_step: profile
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: Invalid role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Invalid role.
+                data: null
+                error:
+                  code: invalid_role
+                  detail: Invalid role.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Role already set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Role already set.
+                data: null
+                error:
+                  code: role_already_set
+                  detail: Role already set.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- Profile submission -----------------------------------------------------
+  /api/onboarding/profile/:
+    post:
+      summary: Submit profile details
+      description: |
+        Submit first name, last name, age, and gender. Must be called after role selection.
+        - **Passengers**: onboarding completes immediately (status → COMPLETE)
+        - **Drivers**: must proceed to DL submission (status → AWAITING_DL)
+      operationId: profile_submit
+      tags: [Onboarding]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileDetailsRequest'
+            example:
+              first_name: Priya
+              last_name: Sharma
+              age: 27
+              gender: female
+      responses:
+        '200':
+          description: Profile submitted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/ProfileDetailsResponse'
+              examples:
+                passenger:
+                  summary: Passenger (onboarding complete)
+                  value:
+                    success: true
+                    message: Profile submitted successfully.
+                    data:
+                      onboarding_status: COMPLETE
+                      next_step: none
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+                driver:
+                  summary: Driver (needs DL)
+                  value:
+                    success: true
+                    message: Profile submitted successfully.
+                    data:
+                      onboarding_status: AWAITING_DL
+                      next_step: dl_submission
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                invalid_age:
+                  summary: Age out of range
+                  value:
+                    success: false
+                    message: Age must be between 18 and 80
+                    data: null
+                    error:
+                      code: invalid_age
+                      detail: Age must be between 18 and 80
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+                invalid_gender:
+                  summary: Invalid gender value
+                  value:
+                    success: false
+                    message: Invalid gender.
+                    data: null
+                    error:
+                      code: invalid_gender
+                      detail: Invalid gender.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Profile already submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Profile already set.
+                data: null
+                error:
+                  code: profile_already_set
+                  detail: Profile already set.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- DL submission ----------------------------------------------------------
+  /api/onboarding/driver/dl/:
+    post:
+      summary: Submit driving licence for verification
+      description: |
+        Submit an Indian driving licence number for verification.
+        Only accessible to users with active_role = DRIVER.
+
+        **DL format**: XX00 0000 0000000 (2-letter state code, 13 digits)
+        Spaces/hyphens are optional and normalized server-side.
+
+        **Verification modes**:
+        - **Sync verified** (200): DL verified immediately, onboarding complete
+        - **Async pending** (202): Verification in progress, poll /api/onboarding/driver/dl/status/
+
+        **Attempt limit**: 3 submissions before manual review required.
+      operationId: dl_submit
+      tags: [Driver Verification]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DLSubmissionRequest'
+            example:
+              dl_number: "MH01 20110012345"
+      responses:
+        '200':
+          description: DL verified synchronously
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/DLSubmissionResponse'
+              example:
+                success: true
+                message: Driving licence verified successfully.
+                data:
+                  dl_verification_status: VERIFIED
+                  onboarding_status: COMPLETE
+                  next_step: none
+                  reference_id: mock-a1b2c3d4
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '202':
+          description: DL verification pending (async)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/DLSubmissionResponse'
+              example:
+                success: true
+                message: Driving licence verification in progress.
+                data:
+                  dl_verification_status: PENDING
+                  onboarding_status: PENDING_VERIFICATION
+                  next_step: awaiting_verification
+                  reference_id: provider-ref-xyz789
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: Invalid DL format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Invalid DL format. Expected XX00 0000 0000000.
+                data: null
+                error:
+                  code: invalid_dl_format
+                  detail: Invalid DL format. Expected XX00 0000 0000000.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not a driver
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Only drivers can submit a driving licence.
+                data: null
+                error:
+                  code: not_a_driver
+                  detail: Only drivers can submit a driving licence.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '409':
+          description: DL already verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Driving licence already verified.
+                data: null
+                error:
+                  code: dl_already_verified
+                  detail: Driving licence already verified.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '422':
+          description: DL verification provider error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: DL verification service unavailable. Try again shortly.
+                data: null
+                error:
+                  code: dl_provider_error
+                  detail: DL verification service unavailable. Try again shortly.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '429':
+          description: Maximum DL submission attempts exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Maximum DL submission attempts exceeded. Contact support.
+                data: null
+                error:
+                  code: max_dl_attempts_exceeded
+                  detail: Maximum DL submission attempts exceeded. Contact support.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- DL status polling ------------------------------------------------------
+  /api/onboarding/driver/dl/status/:
+    get:
+      summary: Get DL verification status
+      description: |
+        Poll for the current DL verification status.
+        Only accessible to drivers (active_role = DRIVER).
+      operationId: dl_status
+      tags: [Driver Verification]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current DL verification status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/DLStatusResponse'
+              example:
+                success: true
+                message: null
+                data:
+                  dl_verification_status: VERIFIED
+                  onboarding_status: COMPLETE
+                  rejection_reason: null
+                  dl_number_display: "2345"
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not a driver
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  # -- DL webhook (async verification callback) -------------------------------
+  /api/onboarding/driver/dl/webhook/:
+    post:
+      summary: DL verification webhook callback
+      description: |
+        Receives async verification results from the DL provider.
+        Requires valid webhook signature (provider-specific).
+
+        **Not authenticated via JWT** — uses webhook signature validation.
+      operationId: dl_webhook
+      tags: [Driver Verification]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRequest'
+            example:
+              reference_id: provider-ref-xyz789
+              status: verified
+              rejection_reason: null
+      responses:
+        '200':
+          description: Webhook processed successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          detail:
+                            type: string
+                            example: webhook_processed
+              example:
+                success: true
+                message: Webhook processed successfully.
+                data:
+                  detail: webhook_processed
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: Malformed payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Invalid webhook signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Invalid webhook signature.
+                data: null
+                error:
+                  code: invalid_webhook_signature
+                  detail: Invalid webhook signature.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '404':
+          description: Reference ID not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '409':
+          description: Result already processed (idempotent retry)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Webhook already processed.
+                data: null
+                error:
+                  code: already_processed
+                  detail: Webhook already processed.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- Role switching ---------------------------------------------------------
+  /api/profile/role/:
+    patch:
+      summary: Switch active role
+      description: |
+        Switch between driver and passenger roles after onboarding is complete.
+
+        **Rules**:
+        - Switching to **passenger**: always immediate
+        - Switching to **driver**: requires verified DL
+          - If DL is verified → immediate switch, status = COMPLETE
+          - If DL is pending → switch allowed, status = PENDING_VERIFICATION
+          - If no DL or rejected → returns 400 with code `dl_required`
+      operationId: role_switch
+      tags: [Profile]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSwitchRequest'
+            example:
+              role: driver
+      responses:
+        '200':
+          description: Role switched successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/RoleSwitchResponse'
+              example:
+                success: true
+                message: Role switched successfully.
+                data:
+                  active_role: DRIVER
+                  onboarding_status: COMPLETE
+                  dl_verification_status: VERIFIED
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '202':
+          description: Role switched to driver but DL is pending
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/RoleSwitchResponse'
+              example:
+                success: true
+                message: Role switched. DL verification still pending.
+                data:
+                  active_role: DRIVER
+                  onboarding_status: PENDING_VERIFICATION
+                  dl_verification_status: PENDING
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: DL verification required to switch to driver
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Driving licence verification required to act as a driver.
+                data: null
+                error:
+                  code: dl_required
+                  detail: Driving licence verification required to act as a driver.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/OnboardingIncomplete'
