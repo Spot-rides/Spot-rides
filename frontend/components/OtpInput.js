@@ -23,16 +23,25 @@ export default function OtpInput({ value, onChangeText, error }) {
         {Array.from({ length: OTP_LENGTH }).map((_, i) => {
           const isFilled = i < digits.length;
           const isActive = i === digits.length;
+          const isEmpty = i > digits.length;
+
           return (
             <View
               key={i}
               style={[
                 styles.box,
+                isFilled && styles.boxFilled,
                 isActive && styles.boxActive,
                 error && styles.boxError,
               ]}
             >
-              <Text style={styles.digit}>{isFilled ? digits[i] : ''}</Text>
+              {isFilled ? (
+                <Text style={styles.digit}>{digits[i]}</Text>
+              ) : isActive ? (
+                <View style={styles.cursor} />
+              ) : (
+                <View style={styles.dot} />
+              )}
             </View>
           );
         })}
@@ -52,35 +61,51 @@ export default function OtpInput({ value, onChangeText, error }) {
   );
 }
 
-const BOX_SIZE = 48;
-
 const styles = StyleSheet.create({
   boxRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    gap: theme.spacing.sm + 2,
+    gap: 8,
   },
   box: {
-    width: BOX_SIZE,
-    height: BOX_SIZE + 8,
-    borderRadius: theme.radii.input,
-    borderWidth: 1.5,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    width: 48,
+    height: 56,
+    borderRadius: theme.radii.lg,
+    backgroundColor: theme.colors.surfaceContainerHigh,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  boxFilled: {
+    backgroundColor: theme.colors.surfaceContainerLowest,
+    ...theme.shadow.sm,
+  },
   boxActive: {
-    borderColor: theme.colors.primary,
+    backgroundColor: theme.colors.surfaceContainerLowest,
     borderWidth: 2,
+    borderColor: theme.colors.primaryContainer,
+    ...theme.shadow.md,
   },
   boxError: {
+    borderWidth: 1.5,
     borderColor: theme.colors.error,
   },
   digit: {
     fontFamily: theme.fonts.bold,
     fontSize: theme.fontSize.xl,
-    color: theme.colors.textPrimary,
+    lineHeight: theme.lineHeight.xl,
+    color: theme.colors.onSurface,
+  },
+  cursor: {
+    width: 2,
+    height: 24,
+    borderRadius: 1,
+    backgroundColor: theme.colors.primaryContainer,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.outlineVariant,
   },
   hiddenInput: {
     position: 'absolute',
@@ -92,7 +117,7 @@ const styles = StyleSheet.create({
     color: theme.colors.error,
     fontFamily: theme.fonts.regular,
     fontSize: theme.fontSize.sm,
-    marginTop: theme.spacing.sm,
+    marginTop: 12,
     textAlign: 'center',
   },
 });
