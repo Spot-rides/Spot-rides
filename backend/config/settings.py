@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     # Local apps
     'accounts',
+    'profiles.apps.ProfilesConfig',
 ]
 AUTH_USER_MODEL = 'accounts.User'
 
@@ -107,9 +108,13 @@ if DEBUG:
 else:
     CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='', cast=Csv())
 
+# Onboarding gate feature flag (default: False to avoid breaking existing clients)
+ONBOARDING_GATE_ENABLED = config('ONBOARDING_GATE_ENABLED', default=False, cast=bool)
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
+        'core.permissions.ConditionalOnboardingGate',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',

@@ -79,6 +79,7 @@ def send_otp_sms(phone_e164: str, code: str, *, request_id: str = '') -> None:
     logging filter masks) and the provider error code are recorded.
     """
     if _dev_mode_active():
+        print(f"OTP_DEV_MODE is active. Skipping SMS dispatch for phone {phone_e164} with code {code}")
         logger.info(
             'otp_dev_dispatch_skipped',
             extra={'phone_number': phone_e164, 'request_id': request_id},
