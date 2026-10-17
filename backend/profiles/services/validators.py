@@ -57,3 +57,27 @@ def validate_name(name: str, field_name: str) -> Tuple[bool, str]:
     if not re.match(r"^[\w\s'-]+$", name, re.UNICODE):
         return False, f"{field_name} contains invalid characters"
     return True, ""
+
+
+# Indian vehicle registration format: XX00X(X)(X)0(000)
+# Two state letters + two RTO digits + 1-3 series letters + 1-4 number digits
+VEHICLE_REG_PATTERN = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{1,4}$')
+
+
+def normalize_registration_number(number: str) -> str:
+    """Normalize vehicle registration: strip whitespace, remove hyphens/spaces, uppercase."""
+    return re.sub(r'[\s-]', '', number.strip().upper())
+
+
+def validate_registration_number(number: str) -> Tuple[bool, str]:
+    """Validate Indian vehicle registration number format.
+
+    Args:
+        number: Already-normalized registration number (uppercase, no spaces/hyphens)
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if not VEHICLE_REG_PATTERN.match(number):
+        return False, "Invalid vehicle registration format. Expected: XX00XXX0000 (e.g. MH01AB1234)"
+    return True, ""

@@ -1,6 +1,7 @@
 # ADR: FEAT-002 User Onboarding — Architectural Decisions
 
 **Date:** 2026-09-23
+**Updated:** 2026-10-10
 **Status:** accepted
 **Feature:** FEAT-002 — User Onboarding Flow
 **Author:** architect
@@ -10,7 +11,9 @@
 
 ## Context
 
-FEAT-002 introduces a structured onboarding flow that gates access to the main Spot Rides experience. Six non-obvious architectural choices were identified during design that have downstream implications for security, coupling, testability, and operational complexity. This ADR records those choices and the reasoning behind each.
+FEAT-002 introduces a structured onboarding flow that gates access to the main Spot Rides experience. Several non-obvious architectural choices were identified during design that have downstream implications for security, coupling, testability, and operational complexity. This ADR records those choices and the reasoning behind each.
+
+**Update (2026-10-10):** Requirements v3 added vehicle registration to Driver onboarding, introducing Decision 8 (Vehicle model relationship type) and Decision 9 (Vehicle model placement). OQ-01, OQ-02, OQ-04, OQ-06, and OQ-07 have been resolved.
 
 ---
 
@@ -73,7 +76,7 @@ Drawback: the signal lives in `accounts` (or a `profiles/apps.py` receiver), whi
 - Field `dl_number` on `DriverVerification` stores the Fernet-encrypted ciphertext as a base64 string in a `CharField(256)` (ciphertext of a ~20-char DL is ~120 bytes encoded).
 - Field `dl_number_display` stores the last 4 characters of the normalised plaintext DL as `CharField(4)`.
 - Env var `DL_ENCRYPTION_KEY` holds the Fernet key (32-byte base64url; generated once with `Fernet.generate_key()`).
-- A helper `profiles/crypto.py` exposes `encrypt_dl(plaintext) -> str` and `decrypt_dl(ciphertext) -> str`.
+- A helper `profiles/utils/crypto.py` exposes `encrypt_dl_number(plaintext) -> str` and related helpers.
 - The key is loaded via `python-decouple`: `DL_ENCRYPTION_KEY = config('DL_ENCRYPTION_KEY')`.
 - Key rotation is out of scope for v1 but is enabled by storing a `dl_key_version` column (default `1`) for future migration use.
 
@@ -100,7 +103,7 @@ Added to `DEFAULT_PERMISSION_CLASSES` alongside `IsAuthenticated`. Checks `reque
 **Implementation note.**
 `profiles/permissions.py` defines:
 - `IsOnboardingComplete` — for any authenticated endpoint outside the onboarding flow; returns `403 onboarding_incomplete` with `onboarding_status` and `next_step`.
-- `IsDriverRole` — for driver-only endpoints (`POST /api/onboarding/driver/dl/`, `GET /api/onboarding/driver/dl/status/`); returns `403 not_a_driver` if `active_role != DRIVER`.
+- `IsDriverRole` — for driver-only endpoints (`POST /api/onboarding/driver/dl/`, `POST /api/onboarding/driver/vehicle/`, `GET /api/onboarding/driver/dl/status/`); returns `403 not_a_driver` if `active_role != DRIVER`.
 - `IsDriverVerified` — for driver-facing ride endpoints; checks `dl_verification_status == VERIFIED` in addition to `active_role == DRIVER` (enforces FR-25 independently of role field).
 
 `settings.py` `DEFAULT_PERMISSION_CLASSES` becomes:
@@ -165,8 +168,8 @@ class DLVerificationAdapter(ABC):
 ```
 
 Concrete implementations:
-- `profiles/adapters/mock.py` — `MockDLVerificationAdapter` used in tests and dev; configurable to return `verified`, `pending`, or `rejected` via a `settings.DL_ADAPTER_MOCK_RESULT`.
-- Provider-specific adapters (e.g. `profiles/adapters/karza.py`, `profiles/adapters/idfy.py`) added when the provider is chosen (OQ-01).
+- `profiles/adapters/mock.py` — `MockDLVerificationAdapter` used in tests and dev; configurable to return `verified`, `pending`, or `rejected`.
+- `profiles/adapters/digilocker.py` — `DigiLockerDLVerificationAdapter` for production; uses DigiLocker Pull URI API with OAuth 2.0 authentication.
 
 The active adapter is loaded by name from settings:
 ```
@@ -190,12 +193,81 @@ The `UserSerializer` adds `onboarding_status` and `active_role` via `SerializerM
 
 ---
 
-## Open questions that remain unresolved (require provider selection)
+## Decision 8 — Vehicle model relationship type (NEW, resolves OQ-07 partially)
+
+### Options considered
+
+**A. `OneToOneField` to `accounts.User`.**
+Enforces exactly one vehicle per user at the database level. Simple, no application-layer uniqueness check needed.
+
+Drawback: when multi-vehicle support is added in the future, this requires a schema migration from OneToOneField to ForeignKey. This migration is disruptive: it drops and recreates the unique constraint, requires a data migration if the constraint already has data, and the rollback path is complex.
+
+**B. `ForeignKey` to `accounts.User` with application-layer enforcement of max 1 active vehicle in v1.**
+Allows multiple vehicle rows per user at the database level. The `is_active` boolean flag marks the active vehicle. The service layer checks `user.vehicles.filter(is_active=True).exists()` before creating a new vehicle and raises `VehicleAlreadyRegistered` if one exists.
+
+### Decision: Option B — ForeignKey with application-layer enforcement
+
+**Rationale.**
+- The product roadmap explicitly mentions multi-vehicle support as a future feature. Using ForeignKey now avoids a disruptive schema migration later.
+- The `is_active` field provides a natural mechanism for managing active/inactive vehicles when multi-vehicle is added.
+- Application-layer enforcement of "max 1 active vehicle" is straightforward: a single `.exists()` query in `register_vehicle()` inside a `transaction.atomic` block.
+- The trade-off is that the database does not independently enforce the single-vehicle invariant. A bug in the service layer could create multiple active vehicles. This risk is acceptable because: (a) the `register_vehicle()` function is the only write path for vehicles in v1, (b) the function runs in a transaction, and (c) the risk can be further mitigated with a periodic data integrity check if needed.
+
+**Implementation note.**
+- `Vehicle.user` is `models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='vehicles')`.
+- Composite index on `(user, is_active)` supports the common query pattern.
+- `register_vehicle()` calls `user.vehicles.filter(is_active=True).exists()` before creating. If true, raises `VehicleAlreadyRegistered`.
+
+---
+
+## Decision 9 — Vehicle model placement
+
+### Options considered
+
+**A. In the `profiles` app alongside `UserProfile` and `DriverVerification`.**
+All onboarding-related models live in the same app.
+
+**B. In a separate `vehicles` app.**
+Separates vehicle management into its own domain.
+
+### Decision: Option A — place `Vehicle` in the `profiles` app
+
+**Rationale.** Same reasoning as Decision 5 (DriverVerification placement). Vehicle registration is a step in the onboarding state machine in v1 and has no consumers outside the onboarding flow. When multi-vehicle management, vehicle editing, or vehicle-to-ride assignment becomes a first-class domain, extraction to a standalone `vehicles` app can be done without a schema change (just a migration with `app_label` renaming). For now, co-location reduces migration complexity and app registration overhead.
+
+---
+
+## Decision 10 — Vehicle registration number storage (plaintext)
+
+### Options considered
+
+**A. Plaintext storage.**
+Store the registration number as-is in a `CharField(15)`.
+
+**B. Encrypted storage (Fernet, same as DL numbers).**
+Encrypt the registration number at rest using the same Fernet scheme.
+
+### Decision: Option A — plaintext storage
+
+**Rationale.** Vehicle registration numbers are publicly visible on the physical vehicle (painted on license plates). They are not PII in the same category as DL numbers, Aadhaar numbers, or PAN numbers. Encrypting them adds complexity (key management, decrypt on every read) without meaningful security benefit. The requirements (FR-31) explicitly state plaintext storage. If a future compliance requirement changes this assessment, encryption can be added without API contract changes.
+
+---
+
+## Resolved open questions
+
+| ID | Question | Resolution |
+|----|----------|------------|
+| OQ-01 | Which DL verification provider will be used? | **Resolved (v2).** DigiLocker Pull URI API. |
+| OQ-02 | Does the provider support sync and/or async response mode? | **Resolved (v2).** DigiLocker is synchronous. Async/pending path retained as timeout fallback only. |
+| OQ-03 | Should DL number validator normalise lowercase to uppercase? | **Resolved (Decision 1).** Normalise to uppercase. |
+| OQ-04 | What webhook authentication mechanism does the provider supply? | **Resolved (v2).** HMAC-SHA256 if webhook ever activated. Webhook not used in primary DigiLocker flow. |
+| OQ-05 | Should UserProfile be created proactively or lazily? | **Resolved (Decision 2).** Lazy creation via get_or_create. |
+| OQ-06 | Minimum age for Passengers? | **Resolved (v2).** 18 for both roles. |
+| OQ-07 | Vehicle registration in v1 Driver onboarding? | **Resolved (v3).** Yes, included. See FR-27 through FR-31, Decisions 8-10. |
+| OQ-10 | DL number storage: encrypted or hashed? | **Resolved (Decision 3).** Fernet symmetric encryption. |
+
+## Open questions that remain unresolved
 
 | ID | Question | Impact |
 |----|----------|--------|
-| OQ-01 | Which DL verification provider will be used? | Determines concrete adapter implementation, webhook header format, and available `rejection_reason` values. |
-| OQ-02 | Does the provider support sync and/or async response mode? | Determines whether the `202 pending` path is always reachable or only a fallback. |
-| OQ-04 | What webhook authentication mechanism does the provider supply? | `validate_webhook()` implementation in the concrete adapter. Placeholder is HMAC-SHA256 on `X-Signature` header; this must be replaced with the provider's actual mechanism. |
-| OQ-06 | Minimum age for Passengers — 18 for both roles, or lower for Passengers? | Age validation range in `ProfileSubmitSerializer`. Currently both roles use 18–80. |
-| OQ-07 | Vehicle registration number in v1 Driver onboarding? | If yes, expands scope to a new model and additional API steps. Currently deferred. |
+| OQ-08 | How should Drivers in `pending_verification` state be notified when their DL result arrives? Push notifications are a non-goal; will the app poll on launch? | UX concern. Client currently polls on app open. May need push notifications in a future release. |
+| OQ-09 | Auto-rejection of stale `PENDING_VERIFICATION` drivers after N hours — requires a Celery beat task and a product policy decision. | Operational concern. Drivers could be stuck indefinitely in pending state without this. Deferred to a follow-up. |

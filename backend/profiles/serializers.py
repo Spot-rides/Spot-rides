@@ -112,3 +112,24 @@ class WebhookPayloadSerializer(serializers.Serializer):
     reference_id = serializers.CharField()
     status = serializers.ChoiceField(choices=['verified', 'rejected'])
     rejection_reason = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+
+
+class VehicleRegistrationSerializer(serializers.Serializer):
+    """Request for POST /api/onboarding/driver/vehicle/"""
+    registration_number = serializers.CharField(max_length=15)
+    vehicle_type = serializers.ChoiceField(choices=['car', 'suv', 'hatchback', 'sedan', 'auto_rickshaw', 'bike'])
+
+    def validate_registration_number(self, value):
+        from profiles.services.validators import normalize_registration_number, validate_registration_number
+        normalized = normalize_registration_number(value)
+        is_valid, error = validate_registration_number(normalized)
+        if not is_valid:
+            raise serializers.ValidationError(error)
+        return normalized
+
+
+class VehicleRegistrationResponseSerializer(serializers.Serializer):
+    """Response for POST /api/onboarding/driver/vehicle/"""
+    onboarding_status = serializers.CharField()
+    next_step = serializers.CharField()
+    vehicle = serializers.DictField()

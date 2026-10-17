@@ -57,6 +57,14 @@ def _get_client():
     from twilio.http.http_client import TwilioHttpClient
 
     http_client = TwilioHttpClient(timeout=_HTTP_TIMEOUT_SECONDS)
+
+    # In development, corporate proxies with SSL inspection can cause
+    # CERTIFICATE_VERIFY_FAILED. Allow disabling verification via env var.
+    if settings.DEBUG and getattr(settings, 'TWILIO_SSL_VERIFY', True) is False:
+        import warnings
+        warnings.warn('SSL verification disabled for Twilio (dev only).', stacklevel=2)
+        http_client.session.verify = False
+
     _client = Client(sid, token, http_client=http_client)
     return _client
 
@@ -84,6 +92,7 @@ def send_otp_sms(phone_e164: str, code: str, *, request_id: str = '') -> None:
             'otp_dev_dispatch_skipped',
             extra={'phone_number': phone_e164, 'request_id': request_id},
         )
+        print(f"OTP_DEV_MODE is active. Skipping SMS dispatch for phone {phone_e164} with code {code}")
         return
 
     body = _MESSAGE_TEMPLATE.format(code=code)

@@ -173,6 +173,7 @@ TWILIO_ACCOUNT_SID = config('TWILIO_ACCOUNT_SID', default='')
 TWILIO_AUTH_TOKEN = config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = config('TWILIO_FROM_NUMBER', default='')
 TWILIO_MESSAGING_SERVICE_SID = config('TWILIO_MESSAGING_SERVICE_SID', default='')
+TWILIO_SSL_VERIFY = config('TWILIO_SSL_VERIFY', default=True, cast=bool)
 
 ROOT_URLCONF = 'config.urls'
 

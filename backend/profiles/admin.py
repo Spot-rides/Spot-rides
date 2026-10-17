@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import UserProfile, DriverVerification
+from .models import UserProfile, DriverVerification, Vehicle
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
@@ -44,3 +44,11 @@ class DriverVerificationAdmin(admin.ModelAdmin):
             'fields': ('dl_submitted_at', 'dl_verified_at', 'created_at', 'updated_at')
         }),
     )
+
+
+@admin.register(Vehicle)
+class VehicleAdmin(admin.ModelAdmin):
+    list_display = ['user', 'registration_number', 'vehicle_type', 'is_active', 'created_at']
+    list_filter = ['vehicle_type', 'is_active']
+    search_fields = ['user__phone_number', 'registration_number']
+    readonly_fields = ['created_at', 'updated_at']

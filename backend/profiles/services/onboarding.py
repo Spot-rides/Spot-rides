@@ -102,6 +102,52 @@ def set_profile_details(
 
 
 @transaction.atomic
+def register_vehicle(user: User, registration_number: str, vehicle_type: str):
+    """Register a vehicle during driver onboarding.
+
+    Only valid when onboarding_status is AWAITING_VEHICLE.
+    Creates Vehicle record and completes onboarding.
+
+    Args:
+        user: Authenticated user (must be a driver with verified DL)
+        registration_number: Normalized vehicle registration number
+        vehicle_type: One of the VehicleType choices (lowercase accepted, stored uppercase)
+
+    Returns:
+        Tuple of (updated UserProfile, created Vehicle)
+
+    Raises:
+        ValueError: If user not in correct state, DL not verified, or vehicle already registered
+    """
+    from profiles.models import Vehicle
+
+    profile = get_or_create_profile(user)
+
+    if profile.onboarding_status != UserProfile.AWAITING_VEHICLE:
+        raise ValueError("Must complete DL verification before registering a vehicle")
+
+    # Check driver has verified DL
+    if not hasattr(user, 'driver_verification') or user.driver_verification.dl_verification_status != 'verified':
+        raise ValueError("DL must be verified before registering a vehicle")
+
+    # v1: max 1 active vehicle per driver
+    if user.vehicles.filter(is_active=True).exists():
+        raise ValueError("Vehicle already registered")
+
+    vehicle = Vehicle.objects.create(
+        user=user,
+        registration_number=registration_number,
+        vehicle_type=vehicle_type.upper(),
+        is_active=True
+    )
+
+    profile.onboarding_status = UserProfile.COMPLETE
+    profile.save()
+
+    return profile, vehicle
+
+
+@transaction.atomic
 def switch_role(user: User, new_role: str) -> UserProfile:
     """Switch active role after onboarding complete.
 

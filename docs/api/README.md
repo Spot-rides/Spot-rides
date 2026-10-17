@@ -16,7 +16,7 @@ This directory contains OpenAPI 3.0 specifications for the Spot Rides platform A
 - `GET /api/health/` — Health check
 
 ### [openapi-profiles.yaml](./openapi-profiles.yaml)
-**Onboarding API** — User onboarding flow, role selection, and DL verification
+**Onboarding API** — User onboarding flow, role selection, DL verification, and vehicle registration
 
 **Endpoints:**
 - `GET /api/onboarding/status/` — Get onboarding status and next step
@@ -25,6 +25,7 @@ This directory contains OpenAPI 3.0 specifications for the Spot Rides platform A
 - `POST /api/onboarding/driver/dl/` — Submit driving licence for verification
 - `GET /api/onboarding/driver/dl/status/` — Poll DL verification status
 - `POST /api/onboarding/driver/dl/webhook/` — DL verification webhook callback
+- `POST /api/onboarding/driver/vehicle/` — Register vehicle (registration number + type)
 - `PATCH /api/profile/role/` — Switch active role
 
 ## Viewing the Specs
@@ -110,3 +111,4 @@ When disabled, users can access protected endpoints without completing onboardin
 | 2026-09-15 | accounts | Initial OTP authentication endpoints |
 | 2026-09-28 | accounts | Added `onboarding_status` and `active_role` to User schema |
 | 2026-09-28 | profiles | Initial onboarding flow endpoints (FEAT-002) |
+| 2026-10-10 | profiles | Added vehicle registration endpoint, `AWAITING_VEHICLE` state, DigiLocker as DL provider |

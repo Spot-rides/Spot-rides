@@ -28,12 +28,14 @@ class UserProfile(models.Model):
     ROLE_SELECTED = 'role_selected'
     AWAITING_DL = 'awaiting_dl'
     PENDING_VERIFICATION = 'pending_verification'
+    AWAITING_VEHICLE = 'awaiting_vehicle'
     COMPLETE = 'complete'
     ONBOARDING_STATUS_CHOICES = [
         (NOT_STARTED, 'Not Started'),
         (ROLE_SELECTED, 'Role Selected'),
         (AWAITING_DL, 'Awaiting DL'),
         (PENDING_VERIFICATION, 'Pending Verification'),
+        (AWAITING_VEHICLE, 'Awaiting Vehicle'),
         (COMPLETE, 'Complete'),
     ]
 
@@ -153,3 +155,41 @@ class DriverVerification(models.Model):
 
     def __str__(self):
         return f"{self.user.phone_number} - DL {self.dl_verification_status}"
+
+
+class Vehicle(models.Model):
+    """Vehicle registered by a driver during onboarding.
+
+    Uses ForeignKey (not OneToOneField) to support future multi-vehicle.
+    v1 enforces max 1 active vehicle per driver at the application layer.
+    Registration numbers are stored plaintext (publicly visible on vehicles).
+    """
+
+    class VehicleType(models.TextChoices):
+        CAR = 'CAR', 'Car'
+        SUV = 'SUV', 'SUV'
+        HATCHBACK = 'HATCHBACK', 'Hatchback'
+        SEDAN = 'SEDAN', 'Sedan'
+        AUTO_RICKSHAW = 'AUTO_RICKSHAW', 'Auto Rickshaw'
+        BIKE = 'BIKE', 'Bike'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='vehicles'
+    )
+    registration_number = models.CharField(max_length=15)
+    vehicle_type = models.CharField(max_length=20, choices=VehicleType.choices)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'vehicle'
+        verbose_name_plural = 'vehicles'
+        indexes = [
+            models.Index(fields=['user', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f"{self.registration_number} ({self.get_vehicle_type_display()})"

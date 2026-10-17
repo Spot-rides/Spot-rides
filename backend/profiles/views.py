@@ -33,10 +33,13 @@ from profiles.serializers import (
     RoleSelectionSerializer,
     RoleSwitchResponseSerializer,
     RoleSwitchSerializer,
+    VehicleRegistrationSerializer,
+    VehicleRegistrationResponseSerializer,
     WebhookPayloadSerializer,
 )
 from profiles.services.onboarding import (
     get_or_create_profile,
+    register_vehicle,
     set_profile_details,
     set_role,
     switch_role,
@@ -49,6 +52,7 @@ from profiles.services.dl_verification import (
 from profiles.exceptions import (
     AlreadyProcessed,
     DLAlreadyVerified,
+    DLNotVerified,
     DLProviderError,
     DLRequired,
     InvalidOnboardingState,
@@ -57,6 +61,7 @@ from profiles.exceptions import (
     NotADriver,
     ProfileAlreadySet,
     RoleAlreadySet,
+    VehicleAlreadyRegistered,
 )
 
 
@@ -81,6 +86,7 @@ class OnboardingStatusView(APIView):
             UserProfile.ROLE_SELECTED: 'profile',
             UserProfile.AWAITING_DL: 'dl_submission',
             UserProfile.PENDING_VERIFICATION: 'awaiting_verification',
+            UserProfile.AWAITING_VEHICLE: 'vehicle_registration',
             UserProfile.COMPLETE: 'none'
         }
 
@@ -229,9 +235,10 @@ class DLSubmitView(APIView):
         onboarding_status = result['onboarding_status']
 
         next_step_map = {
-            UserProfile.COMPLETE: 'none',
+            UserProfile.AWAITING_VEHICLE: 'vehicle_registration',
             UserProfile.PENDING_VERIFICATION: 'awaiting_verification',
-            UserProfile.AWAITING_DL: 'dl_submission'
+            UserProfile.AWAITING_DL: 'dl_submission',
+            UserProfile.COMPLETE: 'none',
         }
 
         response_data = {
@@ -331,6 +338,50 @@ class DLWebhookView(APIView):
         )
 
         return Response({'detail': 'Webhook processed successfully.'}, status=status.HTTP_200_OK)
+
+
+class VehicleRegisterView(APIView):
+    """POST /api/onboarding/driver/vehicle/ — Register vehicle during driver onboarding.
+
+    Only accessible to drivers with verified DL (onboarding_status=AWAITING_VEHICLE).
+    Creates Vehicle record and completes onboarding.
+    """
+
+    permission_classes = [IsAuthenticated, IsDriverRole]
+
+    def post(self, request):
+        serializer = VehicleRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            profile, vehicle = register_vehicle(
+                request.user,
+                registration_number=serializer.validated_data['registration_number'],
+                vehicle_type=serializer.validated_data['vehicle_type'],
+            )
+        except ValueError as e:
+            error_msg = str(e).lower()
+            if 'dl' in error_msg or 'verified' in error_msg:
+                raise DLNotVerified()
+            elif 'already registered' in error_msg:
+                raise VehicleAlreadyRegistered()
+            raise InvalidOnboardingState(detail=str(e))
+
+        response_data = {
+            'onboarding_status': profile.onboarding_status,
+            'next_step': 'none',
+            'vehicle': {
+                'registration_number': vehicle.registration_number,
+                'vehicle_type': vehicle.vehicle_type,
+            }
+        }
+
+        response_serializer = VehicleRegistrationResponseSerializer(response_data)
+        return ApiResponse(
+            response_serializer.data,
+            message='Vehicle registered successfully. Onboarding complete.',
+            status=status.HTTP_200_OK
+        )
 
 
 class RoleSwitchView(APIView):

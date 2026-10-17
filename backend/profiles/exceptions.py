@@ -104,3 +104,31 @@ class InvalidOnboardingState(ApiError):
     status_code = status.HTTP_400_BAD_REQUEST
     error_code = 'invalid_onboarding_state'
     default_detail = 'This operation is not allowed in your current onboarding state.'
+
+
+class InvalidRegistrationFormat(ApiError):
+    """Vehicle registration number format is invalid."""
+    status_code = status.HTTP_400_BAD_REQUEST
+    error_code = 'invalid_registration_format'
+    default_detail = 'Vehicle registration number format is invalid.'
+
+
+class InvalidVehicleType(ApiError):
+    """Vehicle type is not in the allowed set."""
+    status_code = status.HTTP_400_BAD_REQUEST
+    error_code = 'invalid_vehicle_type'
+    default_detail = 'Vehicle type must be one of: car, suv, hatchback, sedan, auto_rickshaw, bike.'
+
+
+class DLNotVerified(ApiError):
+    """Driver's DL is not yet verified."""
+    status_code = status.HTTP_403_FORBIDDEN
+    error_code = 'dl_not_verified'
+    default_detail = 'Driving licence must be verified before registering a vehicle.'
+
+
+class VehicleAlreadyRegistered(ApiError):
+    """A vehicle is already registered for this driver."""
+    status_code = status.HTTP_409_CONFLICT
+    error_code = 'vehicle_already_registered'
+    default_detail = 'A vehicle is already registered for this account.'

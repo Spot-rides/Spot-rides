@@ -86,7 +86,7 @@ def submit_dl_verification(user: User, dl_number: str) -> Dict[str, Any]:
 
     if result.status == 'verified':
         dl_record.dl_verified_at = timezone.now()
-        profile.onboarding_status = UserProfile.COMPLETE
+        profile.onboarding_status = UserProfile.AWAITING_VEHICLE
     elif result.status == 'pending':
         profile.onboarding_status = UserProfile.PENDING_VERIFICATION
     elif result.status == 'rejected':
@@ -131,7 +131,7 @@ def process_webhook_result(reference_id: str, status: str, rejection_reason: str
 
     if status == 'verified':
         dl_record.dl_verified_at = timezone.now()
-        dl_record.user.profile.onboarding_status = UserProfile.COMPLETE
+        dl_record.user.profile.onboarding_status = UserProfile.AWAITING_VEHICLE
         dl_record.user.profile.save()
     elif status == 'rejected':
         dl_record.dl_rejection_reason = rejection_reason
