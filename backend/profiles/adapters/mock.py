@@ -23,7 +23,7 @@ from .base import (
 
 
 class MockDLVerificationAdapter(DLVerificationAdapter):
-    """Mock adapter for dev/test. Returns configurable results without external calls.
+    """Mock adapter for dev/test ONLY. It verifies anything and must never run in production.
 
     Supports three response modes:
     - 'sync_verified': Returns verified status immediately
@@ -31,8 +31,11 @@ class MockDLVerificationAdapter(DLVerificationAdapter):
     - 'sync_rejected': Returns rejected status with mock reason
 
     The mode is controlled by the response_mode constructor parameter or via
-    settings.DL_ADAPTER_MOCK_RESULT (defaults to 'verified' for backward compat).
+    settings.DL_ADAPTER_MOCK_RESULT (default 'sync_verified'). An unknown mode raises
+    ImproperlyConfigured rather than silently verifying.
     """
+
+    MODES = ('sync_verified', 'async_pending', 'sync_rejected')
 
     def __init__(self, response_mode: str = 'sync_verified'):
         """Initialize mock adapter with specific response behavior.
@@ -41,7 +44,15 @@ class MockDLVerificationAdapter(DLVerificationAdapter):
             response_mode: One of 'sync_verified', 'async_pending', 'sync_rejected'
                           Defaults to 'sync_verified' for simple dev/test scenarios
         """
+        if response_mode not in self.MODES:
+            raise ImproperlyConfigured(
+                f"Unknown DL_ADAPTER_MOCK_RESULT {response_mode!r}; expected one of {self.MODES}"
+            )
         self.response_mode = response_mode
+
+    @classmethod
+    def from_settings(cls, settings) -> 'MockDLVerificationAdapter':
+        return cls(response_mode=getattr(settings, 'DL_ADAPTER_MOCK_RESULT', 'sync_verified'))
 
     def submit(self, dl_number: str, user_id: int) -> DLVerificationResult:
         """Always succeeds for dev/test; returns result based on response_mode.
@@ -69,33 +80,31 @@ class MockDLVerificationAdapter(DLVerificationAdapter):
                 reference_id=f'mock-{uuid.uuid4().hex[:8]}',
                 rejection_reason='Mock rejection for testing'
             )
-        else:
-            # Default to verified if unknown mode
-            return DLVerificationResult(
-                status='verified',
-                reference_id=f'mock-{uuid.uuid4().hex[:8]}'
-            )
+        raise ImproperlyConfigured(f"Unknown mock DL response mode {self.response_mode!r}")
 
     def validate_webhook(self, headers: dict, body: bytes) -> bool:
-        """Mock webhook validation.
+        """HMAC-SHA256 of the raw body (hex) in ``x-dl-signature``, optional ``sha256=`` prefix.
 
-        Checks for X-Mock-Signature header matching settings.DL_WEBHOOK_SECRET.
-        In a real provider, this would validate HMAC-SHA256 or equivalent.
+        The key is ``settings.DL_WEBHOOK_SECRET``. Fails closed on an empty secret or a missing
+        header; compared in constant time.
 
         Args:
             headers: HTTP headers dict (lowercase keys)
-            body: Raw request body bytes (ignored in mock)
-
-        Returns:
-            True if X-Mock-Signature header matches expected value
+            body: Raw request body bytes (before JSON parsing)
         """
         # Import here to avoid circular dependency at module load time
         from django.conf import settings
 
-        expected_signature = getattr(settings, 'DL_WEBHOOK_SECRET', 'mock-secret')
-        actual_signature = headers.get('x-mock-signature', '')
-
-        return actual_signature == expected_signature
+        secret = getattr(settings, 'DL_WEBHOOK_SECRET', '') or ''
+        if not secret:
+            return False
+        provided = (headers.get('x-dl-signature') or '').strip()
+        if provided.startswith('sha256='):
+            provided = provided[len('sha256='):]
+        if not provided:
+            return False
+        expected = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
 
 
 class MockRCVerificationAdapter(RCVerificationAdapter):

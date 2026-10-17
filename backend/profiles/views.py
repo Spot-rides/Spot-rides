@@ -54,10 +54,8 @@ from profiles.services.onboarding import (
 from profiles.services.dl_verification import (
     process_webhook_result,
     submit_dl_verification,
-    _adapter,
 )
 from profiles.exceptions import (
-    AlreadyProcessed,
     DLAlreadyVerified,
     DLNotVerified,
     DLProviderError,
@@ -298,49 +296,39 @@ class DLStatusView(APIView):
 class DLWebhookView(APIView):
     """POST /api/onboarding/driver/dl/webhook/ — Receive DL verification result.
 
-    No JWT authentication (uses signature validation instead).
-    Validates signature before any DB operation.
+    No JWT authentication. The request is authenticated by an HMAC-SHA256 signature of the raw
+    body (header X-DL-Signature, key DL_WEBHOOK_SECRET). The signature is verified before the
+    payload is parsed and before any database access; the adapter is resolved per request
+    through the factory. An unknown reference is a 404 dl_reference_not_found; a duplicate
+    delivery is idempotent (200).
     """
 
     permission_classes = [AllowAny]
     authentication_classes = []
 
     def post(self, request):
-        # Validate signature FIRST, before any other processing
-        headers = {key.lower(): value for key, value in request.headers.items()}
+        from profiles.adapters import get_dl_adapter
 
-        if not _adapter.validate_webhook(headers, request.body):
+        # Validate signature FIRST, before any other processing
+        try:
+            adapter = get_dl_adapter()
+        except Exception as exc:
+            logger.error('onboarding.dl.provider_error', extra={'error_type': type(exc).__name__})
+            raise InvalidWebhookSignature()
+
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        if not adapter.validate_webhook(headers, request.body):
+            logger.warning('onboarding.dl.webhook.invalid_signature')
             raise InvalidWebhookSignature()
 
         # Now parse and validate payload
         serializer = WebhookPayloadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        reference_id = serializer.validated_data['reference_id']
-        result_status = serializer.validated_data['status']
-        rejection_reason = serializer.validated_data.get('rejection_reason')
-
-        try:
-            success = process_webhook_result(reference_id, result_status, rejection_reason)
-        except Exception as e:
-            if 'already' in str(e).lower() or 'processed' in str(e).lower():
-                raise AlreadyProcessed()
-            logger.error(
-                'webhook.processing.error',
-                extra={
-                    'reference_id': reference_id,
-                    'status': result_status,
-                    'error': str(e)
-                }
-            )
-            raise
-
-        logger.info(
-            'webhook.processed',
-            extra={
-                'reference_id': reference_id,
-                'status': result_status
-            }
+        process_webhook_result(
+            serializer.validated_data['reference_id'],
+            serializer.validated_data['status'],
+            serializer.validated_data.get('rejection_reason'),
         )
 
         return Response({'detail': 'Webhook processed successfully.'}, status=status.HTTP_200_OK)

@@ -55,7 +55,11 @@ def _log_event(level: int, event: str, **fields) -> None:
 
 
 def _clear_owner_data(vehicle: Vehicle) -> None:
-    """Single hook for owner-name retention (OQ-R7 is open; resolution by staff keeps the name)."""
+    """Single purge hook for the third-party owner name.
+
+    Called on every terminal transition: sync/webhook verified or rejected and staff
+    approve/reject. Only a vehicle still pending review keeps the name (staff need it to decide).
+    """
     vehicle.rc_owner_name = None
 
 
@@ -390,6 +394,7 @@ def resolve_rc_review(vehicle_id: int, *, approve: bool, reason: Optional[str], 
             vehicle.rc_verification_status = Vehicle.RC_VERIFIED
             vehicle.rc_verified_at = timezone.now()
             vehicle.rc_rejection_reason = None
+            _clear_owner_data(vehicle)
             _complete_if(profile, UserProfile.PENDING_RC_VERIFICATION, UserProfile.AWAITING_VEHICLE)
         else:
             if current != Vehicle.RC_PENDING:
@@ -399,6 +404,7 @@ def resolve_rc_review(vehicle_id: int, *, approve: bool, reason: Optional[str], 
                 raise RCReviewStateError(detail='A reason is required to reject.')
             vehicle.rc_verification_status = Vehicle.RC_REJECTED
             vehicle.rc_rejection_reason = clean
+            _clear_owner_data(vehicle)
             _reject_profile(profile)
 
         vehicle.save()

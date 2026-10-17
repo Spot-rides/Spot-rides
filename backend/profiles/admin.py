@@ -13,6 +13,8 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_filter = ['active_role', 'onboarding_status', 'gender']
     search_fields = ['user__phone_number', 'first_name', 'last_name']
     readonly_fields = ['vehicle_step_exempt', 'created_at', 'updated_at']
+    # State-machine fields: only superusers may edit them by hand (F-11).
+    _state_fields = ['onboarding_status', 'active_role']
 
     fieldsets = (
         ('User', {
@@ -29,19 +31,38 @@ class UserProfileAdmin(admin.ModelAdmin):
         }),
     )
 
+    def get_readonly_fields(self, request, obj=None):
+        readonly = list(super().get_readonly_fields(request, obj))
+        if not request.user.is_superuser:
+            readonly += self._state_fields
+            if obj is not None:
+                readonly.append('user')  # identity key: never re-point a profile
+        return readonly
+
+
 @admin.register(DriverVerification)
 class DriverVerificationAdmin(admin.ModelAdmin):
+    """DL verification records. Rows are created and moved only by the DL service.
+
+    The encrypted ``dl_number`` is never shown or editable here. Every state field is read-only
+    for non-superusers.
+    """
+
     list_display = ['user', 'dl_verification_status', 'dl_number_display', 'attempt_count', 'dl_submitted_at']
     list_filter = ['dl_verification_status']
     search_fields = ['user__phone_number', 'dl_verification_ref']
-    readonly_fields = ['dl_number', 'dl_number_display', 'dl_submitted_at', 'dl_verified_at', 'created_at', 'updated_at']
+    exclude = ['dl_number']
+    readonly_fields = ['dl_number_display', 'dl_submitted_at', 'dl_verified_at', 'created_at', 'updated_at']
+    _state_fields = [
+        'dl_verification_status', 'dl_verification_ref', 'attempt_count', 'dl_rejection_reason',
+    ]
 
     fieldsets = (
         ('User', {
             'fields': ('user',)
         }),
         ('DL Information', {
-            'fields': ('dl_number', 'dl_number_display', 'dl_verification_ref')
+            'fields': ('dl_number_display', 'dl_verification_ref')
         }),
         ('Verification', {
             'fields': ('dl_verification_status', 'dl_rejection_reason', 'attempt_count')
@@ -50,6 +71,19 @@ class DriverVerificationAdmin(admin.ModelAdmin):
             'fields': ('dl_submitted_at', 'dl_verified_at', 'created_at', 'updated_at')
         }),
     )
+
+    def has_add_permission(self, request):
+        # Rows are created by the DL submission service (it encrypts the DL number); an admin
+        # form cannot, and must not, supply one.
+        return False
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly = list(super().get_readonly_fields(request, obj))
+        if not request.user.is_superuser:
+            readonly += self._state_fields
+            if obj is not None:
+                readonly.append('user')
+        return readonly
 
 
 
@@ -134,6 +168,16 @@ class VehicleAdmin(admin.ModelAdmin):
 
     def get_readonly_fields(self, request, obj=None):
         return [f.name for f in Vehicle._meta.fields]
+
+    def get_fieldsets(self, request, obj=None):
+        """The third-party owner name is shown only to holders of profiles.review_rc (F-07)."""
+        fieldsets = super().get_fieldsets(request, obj)
+        if self.has_review_rc_permission(request):
+            return fieldsets
+        return [
+            (name, {**options, 'fields': tuple(f for f in options['fields'] if f != 'rc_owner_name')})
+            for name, options in fieldsets
+        ]
 
     def has_add_permission(self, request):
         return False

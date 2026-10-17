@@ -190,6 +190,13 @@ class MalformedWebhookPayload(ApiError):
     default_detail = 'Webhook payload is invalid.'
 
 
+class DLReferenceNotFound(ApiError):
+    """DL webhook referenced an unknown DL verification reference."""
+    status_code = status.HTTP_404_NOT_FOUND
+    error_code = 'dl_reference_not_found'
+    default_detail = 'DL verification reference not found.'
+
+
 class RCReviewStateError(ApiError):
     """Admin review action not valid for the vehicle's current state."""
     status_code = status.HTTP_409_CONFLICT

@@ -140,6 +140,25 @@ if RC_VERIFICATION_ENABLED:
     if _rc_problems:
         raise ImproperlyConfigured('Invalid RC verification settings: ' + '; '.join(_rc_problems))
 
+# Driving-licence (DL) verification (FEAT-002). The adapter is built per call from these settings.
+DL_ADAPTER_CLASS = config('DL_ADAPTER_CLASS', default='profiles.adapters.mock.MockDLVerificationAdapter')
+DL_ADAPTER_MOCK_RESULT = config('DL_ADAPTER_MOCK_RESULT', default='sync_verified')
+DL_MAX_ATTEMPTS = config('DL_MAX_ATTEMPTS', default=3, cast=int)
+# HMAC-SHA256 key for the DL webhook (header X-DL-Signature). Empty = every webhook is rejected (fail closed).
+DL_WEBHOOK_SECRET = config('DL_WEBHOOK_SECRET', default='')
+# Derived from the environment DEBUG at import so the test runner forcing DEBUG=False cannot trip it.
+DL_MOCK_ADAPTER_FORBIDDEN = not DEBUG
+
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
+
+_dl_problems = []
+if DL_MAX_ATTEMPTS < 1:
+    _dl_problems.append('DL_MAX_ATTEMPTS must be >= 1')
+if not DEBUG and 'mock' in DL_ADAPTER_CLASS.lower():
+    _dl_problems.append('the mock DL adapter is not allowed when DEBUG is off')
+if _dl_problems:
+    raise ImproperlyConfigured('Invalid DL verification settings: ' + '; '.join(_dl_problems))
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',

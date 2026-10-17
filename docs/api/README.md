@@ -24,7 +24,7 @@ This directory contains OpenAPI 3.0 specifications for the Spot Rides platform A
 - `POST /api/onboarding/profile/` — Submit personal details
 - `POST /api/onboarding/driver/dl/` — Submit driving licence for verification
 - `GET /api/onboarding/driver/dl/status/` — Poll DL verification status
-- `POST /api/onboarding/driver/dl/webhook/` — DL verification webhook callback
+- `POST /api/onboarding/driver/dl/webhook/` — DL verification webhook callback (HMAC signature in `X-DL-Signature`; `403` without a valid signature, `404 dl_reference_not_found` for an unknown reference)
 - `POST /api/onboarding/driver/vehicle/` — Register vehicle (registration number + type)
 - `GET /api/onboarding/driver/vehicle/status/` — Poll vehicle RC verification status
 - `POST /api/onboarding/driver/vehicle/rc/webhook/` — RC verification webhook (HMAC signature; `404` while the flag is off)
@@ -111,6 +111,16 @@ When disabled, users can access protected endpoints without completing onboardin
 - Webhook signature: hex `HMAC-SHA256(RC_WEBHOOK_SECRET, raw body)` in the `X-RC-Signature` header (optional `sha256=` prefix).
 
 Error codes corrected on the vehicle endpoint (flag on or off): invalid `registration_number` -> `400 invalid_registration_format`; invalid `vehicle_type` -> `400 invalid_vehicle_type`; passenger -> `403 not_a_driver`; `complete` driver -> `409 vehicle_already_registered`.
+
+## DL Verification Provider and Webhook
+
+The DL adapter is chosen per request from `DL_ADAPTER_CLASS` (default: the dev/test mock). The mock verifies any well-formed DL, so the application refuses to start with the mock adapter when `DEBUG` is off.
+
+- **Webhook signature**: hex `HMAC-SHA256(DL_WEBHOOK_SECRET, raw body)` in the `X-DL-Signature` header (optional `sha256=` prefix), compared in constant time and checked before the body is parsed or the database is touched. A missing or wrong signature, or an empty `DL_WEBHOOK_SECRET`, returns `403 invalid_webhook_signature` (fail closed). The old static `X-Mock-Signature: mock-secret` header is no longer accepted.
+- **Webhook responses**: `200` processed (a duplicate delivery of an already-resolved DL is also `200` and changes nothing), `400` malformed payload (signed requests only), `403` signature, `404 dl_reference_not_found` unknown `reference_id`. Rejection reasons are sanitised before they are stored or shown.
+- **Submission** (`POST /api/onboarding/driver/dl/`): response shapes are unchanged. The attempt limit is `DL_MAX_ATTEMPTS` (default 3) and is enforced under a row lock; a provider failure or invalid provider result is `422 dl_verification_provider_error` (no attempt is consumed); a provider timeout is `202` pending.
+- **Staff**: owner name data from RC verification is cleared when staff approve or reject a vehicle. Onboarding state fields and DL verification state are read-only in the Django admin for non-superusers.
+
 ## Related Documentation
 
 - **Requirements**: `../requirements/FEAT-001-otp-phone-authentication.md`, `../requirements/FEAT-002-user-onboarding.md`
@@ -126,4 +136,5 @@ Error codes corrected on the vehicle endpoint (flag on or off): invalid `registr
 | 2026-09-28 | profiles | Initial onboarding flow endpoints (FEAT-002) |
 | 2026-10-10 | profiles | Added vehicle registration endpoint, `AWAITING_VEHICLE` state, DigiLocker as DL provider |
 | 2026-10-15 | profiles | Flag-gated vehicle RC verification (`pending_rc_verification`, status and webhook endpoints, additive response fields); vehicle endpoint error-code fixes; envelope `error` accepts extra keys |
+| 2026-10-17 | profiles | DL webhook: HMAC-SHA256 `X-DL-Signature` (fail closed) replaces the static `X-Mock-Signature`; unknown reference is `404 dl_reference_not_found` instead of `500`; rejection reasons sanitised; DL submit attempt limit is configurable (`DL_MAX_ATTEMPTS`) and race-safe; provider failures are `422 dl_verification_provider_error` instead of `500` |
 | 2026-10-17 | profiles | Role switch: driver without a verified DL starts driver setup (`awaiting_dl`, `next_step = dl_submission`) instead of `400 dl_required`; passenger exit from every non-initial status; `next_step` always returned |

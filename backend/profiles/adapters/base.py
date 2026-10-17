@@ -30,7 +30,15 @@ class DLVerificationAdapter(ABC):
     All concrete DL verification providers must implement this interface.
     The service layer interacts only with this abstraction, making provider
     selection a configuration concern.
+
+    Adapters are built per call by ``profiles.adapters.get_dl_adapter()``; there is no
+    module-level instance, so settings changes always reach both submission and the webhook.
     """
+
+    @classmethod
+    def from_settings(cls, settings) -> 'DLVerificationAdapter':
+        """Build an instance from Django settings. Override to read provider settings."""
+        return cls()
 
     @abstractmethod
     def submit(self, dl_number: str, user_id: int) -> DLVerificationResult:
@@ -55,7 +63,8 @@ class DLVerificationAdapter(ABC):
 
         This method MUST be called before processing any webhook payload.
         It verifies the request authenticity using provider-specific signature
-        validation (HMAC, IP allowlist, etc).
+        validation (HMAC, IP allowlist, etc). Implementations MUST fail closed: a missing
+        secret, a missing signature header or any malformed input returns False.
 
         Args:
             headers: HTTP headers dict (lowercase keys)

@@ -103,6 +103,18 @@ components:
         optionally prefixed with `sha256=`. The signature is verified before the body is parsed
         or the database is touched; a missing, empty or incorrect signature (or an unset
         secret) is rejected with `403 invalid_webhook_signature`.
+    DLWebhookSignature:
+      type: apiKey
+      in: header
+      name: X-DL-Signature
+      description: |
+        Authenticates DL verification webhook calls (no JWT). The value is the lowercase hex
+        HMAC-SHA256 of the **raw request body** keyed with the shared `DL_WEBHOOK_SECRET`,
+        optionally prefixed with `sha256=`. The comparison is constant-time. The signature is
+        verified before the body is parsed or the database is touched; a missing, empty or
+        incorrect signature (or an unset secret: the endpoint fails closed) is rejected with
+        `403 invalid_webhook_signature`. The former static `X-Mock-Signature: mock-secret` header
+        is no longer accepted.
 
   # -------------------------------------------------------------------------
   # Reusable schemas
@@ -567,6 +579,9 @@ components:
     WebhookRequest:
       type: object
       required: [reference_id, status]
+      description: |
+        Asynchronous DL verification result. Sent as JSON; the raw request body is what is signed
+        (see the `DLWebhookSignature` security scheme).
       properties:
         reference_id:
           type: string
@@ -579,6 +594,7 @@ components:
         rejection_reason:
           type: string
           nullable: true
+          description: Provider rejection reason (sanitised before it is stored or shown to the driver; a blank value is stored as null)
           example: null
 
     RCWebhookRequest:
@@ -1038,7 +1054,7 @@ paths:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '422':
-          description: DL verification provider error
+          description: DL verification provider error (the provider call failed, returned an invalid result, or the DL adapter is misconfigured). No attempt is consumed and nothing is persisted; a provider timeout is not an error (it yields `202` pending).
           content:
             application/json:
               schema:
@@ -1056,7 +1072,7 @@ paths:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '429':
-          description: Maximum DL submission attempts exceeded
+          description: Maximum DL submission attempts exceeded (`DL_MAX_ATTEMPTS`, default 3). The count is enforced under a row lock, so parallel submissions cannot exceed it.
           content:
             application/json:
               schema:
@@ -1123,12 +1139,22 @@ paths:
       summary: DL verification webhook callback
       description: |
         Receives async verification results from the DL provider.
-        Requires valid webhook signature (provider-specific).
 
-        **Not authenticated via JWT** — uses webhook signature validation.
+        **Not authenticated via JWT.** Calls are authenticated by the `X-DL-Signature` header: the
+        lowercase hex HMAC-SHA256 of the raw request body keyed with `DL_WEBHOOK_SECRET`, optionally
+        prefixed with `sha256=`. The signature is verified before the payload is parsed and before
+        any database access; a missing, empty or incorrect signature, or an unset secret, returns
+        `403 invalid_webhook_signature` and changes nothing.
+
+        Delivery is idempotent: a result for a DL that is already `verified` or `rejected` is
+        acknowledged with `200` and changes nothing (it is not an error). A `verified` result
+        advances the driver from `pending_verification` to `awaiting_vehicle` only; a user who has
+        since switched to passenger keeps their status. An unknown `reference_id` returns
+        `404 dl_reference_not_found`.
       operationId: dl_webhook
       tags: [Driver Verification]
-      security: []
+      security:
+        - DLWebhookSignature: []
       requestBody:
         required: true
         content:
@@ -1141,7 +1167,7 @@ paths:
               rejection_reason: null
       responses:
         '200':
-          description: Webhook processed successfully
+          description: Webhook processed successfully (also returned for an idempotent re-delivery of an already-resolved DL)
           content:
             application/json:
               schema:
@@ -1164,53 +1190,47 @@ paths:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '400':
-          description: Malformed payload
+          description: Malformed payload (only reachable with a valid signature)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '403':
-          description: Invalid webhook signature
+          description: Missing, empty or invalid `X-DL-Signature`, or no `DL_WEBHOOK_SECRET` configured (no state change, no database access)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
               example:
                 success: false
-                message: Invalid webhook signature.
+                message: Webhook signature validation failed.
                 data: null
                 error:
                   code: invalid_webhook_signature
-                  detail: Invalid webhook signature.
+                  detail: Webhook signature validation failed.
                   fields: null
                   retry_after: null
                 meta:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
-                  timestamp: "2026-09-23T10:00:00Z"
+                  timestamp: "2026-10-17T10:00:00Z"
         '404':
-          description: Reference ID not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorEnvelope'
-        '409':
-          description: Result already processed (idempotent retry)
+          description: Valid signature but unknown `reference_id` (`dl_reference_not_found`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
               example:
                 success: false
-                message: Webhook already processed.
+                message: DL verification reference not found.
                 data: null
                 error:
-                  code: already_processed
-                  detail: Webhook already processed.
+                  code: dl_reference_not_found
+                  detail: DL verification reference not found.
                   fields: null
                   retry_after: null
                 meta:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
-                  timestamp: "2026-09-23T10:00:00Z"
+                  timestamp: "2026-10-17T10:00:00Z"
 
   # -- Vehicle registration ----------------------------------------------------
   /api/onboarding/driver/vehicle/:
