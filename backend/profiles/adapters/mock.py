@@ -4,9 +4,22 @@ This adapter simulates DL verification without calling any external service.
 Behavior is controlled via settings.DL_ADAPTER_MOCK_RESULT.
 """
 
+import hashlib
+import hmac
+import json
 import uuid
+from datetime import date, timedelta
 from typing import Optional
-from .base import DLVerificationAdapter, DLVerificationResult
+
+from django.core.exceptions import ImproperlyConfigured
+
+from .base import (
+    DLVerificationAdapter,
+    DLVerificationResult,
+    RCAdapterError,
+    RCVerificationAdapter,
+    RCVerificationResult,
+)
 
 
 class MockDLVerificationAdapter(DLVerificationAdapter):
@@ -83,3 +96,135 @@ class MockDLVerificationAdapter(DLVerificationAdapter):
         actual_signature = headers.get('x-mock-signature', '')
 
         return actual_signature == expected_signature
+
+
+class MockRCVerificationAdapter(RCVerificationAdapter):
+    """Mock RC adapter for dev/test ONLY. It verifies anything and must never run in production.
+
+    Modes (``settings.RC_ADAPTER_MOCK_RESULT``): sync_verified, sync_verified_name_mismatch,
+    async_pending, sync_rejected, timeout, provider_error. No network I/O.
+    """
+
+    MODES = (
+        'sync_verified',
+        'sync_verified_name_mismatch',
+        'async_pending',
+        'sync_rejected',
+        'timeout',
+        'provider_error',
+    )
+
+    def __init__(self, *, timeout_seconds: float, response_mode: str = 'sync_verified'):
+        super().__init__(timeout_seconds=timeout_seconds)
+        if response_mode not in self.MODES:
+            raise ImproperlyConfigured(
+                f"Unknown RC_ADAPTER_MOCK_RESULT {response_mode!r}; expected one of {self.MODES}"
+            )
+        self.response_mode = response_mode
+
+    @classmethod
+    def from_settings(cls, settings) -> 'MockRCVerificationAdapter':
+        return cls(
+            timeout_seconds=getattr(settings, 'RC_PROVIDER_TIMEOUT_SECONDS', 5),
+            response_mode=getattr(settings, 'RC_ADAPTER_MOCK_RESULT', 'sync_verified'),
+        )
+
+    def verify(self, registration_number: str, user_id: int) -> RCVerificationResult:
+        mode = self.response_mode
+        if mode == 'timeout':
+            raise TimeoutError('mock provider timeout')
+        if mode == 'provider_error':
+            raise RCAdapterError('mock provider error')
+
+        reference_id = f'mock-rc-{uuid.uuid4().hex[:8]}'
+        if mode == 'async_pending':
+            return RCVerificationResult(status='pending', reference_id=reference_id)
+        if mode == 'sync_rejected':
+            return RCVerificationResult(
+                status='rejected',
+                reference_id=reference_id,
+                rejection_reason='Mock rejection for testing',
+            )
+
+        if mode == 'sync_verified_name_mismatch':
+            owner_name = 'MOCK OTHER OWNER'
+        else:
+            owner_name = self._profile_name(user_id)
+        today = date.today()
+        return RCVerificationResult(
+            status='verified',
+            reference_id=reference_id,
+            owner_name=owner_name,
+            vehicle_class=None,
+            fuel_type='PETROL',
+            fitness_valid_upto=today + timedelta(days=365),
+            insurance_valid_upto=today + timedelta(days=365),
+        )
+
+    @staticmethod
+    def _profile_name(user_id: int) -> Optional[str]:
+        from profiles.models import UserProfile
+
+        profile = UserProfile.objects.filter(user_id=user_id).only('first_name', 'last_name').first()
+        if profile is None:
+            return None
+        name = ' '.join(p for p in (profile.first_name, profile.last_name) if p)
+        return name or None
+
+    def validate_webhook(self, headers: dict, body: bytes) -> bool:
+        """HMAC-SHA256 of the raw body (hex) in ``x-rc-signature``. Fails closed on an empty secret."""
+        from django.conf import settings
+
+        secret = getattr(settings, 'RC_WEBHOOK_SECRET', '') or ''
+        if not secret:
+            return False
+        provided = (headers.get('x-rc-signature') or '').strip()
+        if provided.startswith('sha256='):
+            provided = provided[len('sha256='):]
+        if not provided:
+            return False
+        expected = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
+
+    def parse_webhook(self, body: bytes) -> RCVerificationResult:
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            raise RCAdapterError('malformed webhook body')
+        if not isinstance(payload, dict):
+            raise RCAdapterError('malformed webhook body')
+
+        reference_id = payload.get('reference_id')
+        status = payload.get('status')
+        if not isinstance(reference_id, str) or not reference_id or len(reference_id) > 100:
+            raise RCAdapterError('invalid reference_id')
+        if status not in ('verified', 'rejected'):
+            raise RCAdapterError('invalid status')
+
+        def optional_str(key):
+            value = payload.get(key)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise RCAdapterError(f'invalid {key}')
+            return value
+
+        def optional_date(key):
+            value = payload.get(key)
+            if value is None:
+                return None
+            try:
+                return date.fromisoformat(value)
+            except (TypeError, ValueError):
+                raise RCAdapterError(f'invalid {key}')
+
+        return RCVerificationResult(
+            status=status,
+            reference_id=reference_id,
+            rejection_reason=optional_str('rejection_reason'),
+            owner_name=optional_str('owner_name'),
+            vehicle_class=optional_str('vehicle_class'),
+            fuel_type=optional_str('fuel_type'),
+            fitness_valid_upto=optional_date('fitness_valid_upto'),
+            insurance_valid_upto=optional_date('insurance_valid_upto'),
+        )

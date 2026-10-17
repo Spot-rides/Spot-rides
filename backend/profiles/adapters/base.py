@@ -5,7 +5,8 @@ Provider-specific adapters (mock, real providers) inherit from DLVerificationAda
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 
@@ -64,3 +65,57 @@ class DLVerificationAdapter(ABC):
             True if signature is valid, False otherwise
         """
         pass
+
+
+@dataclass(frozen=True)
+class RCVerificationResult:
+    """Result from an RC verification provider. Every provider-derived field is optional.
+
+    ``owner_name`` is third-party PII: ``repr=False`` keeps it out of logs that print the result.
+    """
+    status: str  # 'verified', 'pending', 'rejected'
+    reference_id: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    owner_name: Optional[str] = field(default=None, repr=False)
+    vehicle_class: Optional[str] = None
+    fuel_type: Optional[str] = None
+    fitness_valid_upto: Optional[date] = None
+    insurance_valid_upto: Optional[date] = None
+
+
+class RCAdapterError(Exception):
+    """Any non-timeout provider failure. The message must not contain payloads or owner data."""
+
+
+class RCVerificationAdapter(ABC):
+    """Abstract interface for vehicle RC verification providers.
+
+    Contract: provider outcomes "not found", "blacklisted" and "blocked" map to
+    ``status='rejected'`` with a fixed, non-PII reason; ``timeout_seconds`` must be applied
+    by the adapter to its own network calls and a timeout must surface as ``TimeoutError``.
+    """
+
+    def __init__(self, *, timeout_seconds: float):
+        self.timeout_seconds = timeout_seconds
+
+    @classmethod
+    @abstractmethod
+    def from_settings(cls, settings) -> 'RCVerificationAdapter':
+        """Build an instance from Django settings."""
+
+    @abstractmethod
+    def verify(self, registration_number: str, user_id: int) -> RCVerificationResult:
+        """Look up a normalised registration number.
+
+        Raises:
+            TimeoutError: provider did not respond within ``timeout_seconds``
+            RCAdapterError: any other provider failure
+        """
+
+    @abstractmethod
+    def validate_webhook(self, headers: dict, body: bytes) -> bool:
+        """Verify the webhook signature. Header keys are lower-case. Must fail closed."""
+
+    @abstractmethod
+    def parse_webhook(self, body: bytes) -> RCVerificationResult:
+        """Turn a webhook body into a result. Raises RCAdapterError if malformed."""

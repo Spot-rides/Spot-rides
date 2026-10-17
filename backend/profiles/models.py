@@ -2,6 +2,7 @@
 
 - ``UserProfile``: onboarding state machine, active role, and personal profile.
 - ``DriverVerification``: DL submission state, encrypted DL number, and verification status.
+- ``Vehicle``: driver vehicle, with optional RC verification columns (flag-gated).
 """
 
 from django.conf import settings
@@ -29,6 +30,7 @@ class UserProfile(models.Model):
     AWAITING_DL = 'awaiting_dl'
     PENDING_VERIFICATION = 'pending_verification'
     AWAITING_VEHICLE = 'awaiting_vehicle'
+    PENDING_RC_VERIFICATION = 'pending_rc_verification'
     COMPLETE = 'complete'
     ONBOARDING_STATUS_CHOICES = [
         (NOT_STARTED, 'Not Started'),
@@ -36,6 +38,7 @@ class UserProfile(models.Model):
         (AWAITING_DL, 'Awaiting DL'),
         (PENDING_VERIFICATION, 'Pending Verification'),
         (AWAITING_VEHICLE, 'Awaiting Vehicle'),
+        (PENDING_RC_VERIFICATION, 'Pending RC Verification'),
         (COMPLETE, 'Complete'),
     ]
 
@@ -75,6 +78,14 @@ class UserProfile(models.Model):
         max_length=30,
         choices=ONBOARDING_STATUS_CHOICES,
         default=NOT_STARTED
+    )
+    vehicle_step_exempt = models.BooleanField(
+        default=False,
+        db_default=False,
+        help_text=(
+            'Driver grandfathered from before the vehicle step existed (FR-43). Set ONLY by the '
+            'data migration; never set by application code or admin.'
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -184,11 +195,65 @@ class Vehicle(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # RC verification (all NULL / 0 when RC_VERIFICATION_ENABLED is off)
+    RC_PENDING = 'pending'
+    RC_VERIFIED = 'verified'
+    RC_REJECTED = 'rejected'
+    RC_STATUS_CHOICES = [
+        (RC_PENDING, 'Pending'),
+        (RC_VERIFIED, 'Verified'),
+        (RC_REJECTED, 'Rejected'),
+    ]
+
+    NAME_MATCH = 'match'
+    NAME_PARTIAL = 'partial'
+    NAME_MISMATCH = 'mismatch'
+    NAME_NOT_CHECKED = 'not_checked'
+    NAME_MATCH_CHOICES = [
+        (NAME_MATCH, 'Match'),
+        (NAME_PARTIAL, 'Partial'),
+        (NAME_MISMATCH, 'Mismatch'),
+        (NAME_NOT_CHECKED, 'Not checked'),
+    ]
+
+    rc_verification_status = models.CharField(
+        max_length=20, choices=RC_STATUS_CHOICES, null=True, blank=True,
+        help_text='NULL = legacy / self-declared (flag off)',
+    )
+    rc_verification_ref = models.CharField(max_length=100, null=True, blank=True)
+    rc_submitted_at = models.DateTimeField(null=True, blank=True)
+    rc_verified_at = models.DateTimeField(null=True, blank=True)
+    rc_rejection_reason = models.TextField(null=True, blank=True)
+    rc_attempt_count = models.PositiveSmallIntegerField(default=0, db_default=0)
+    rc_owner_name = models.CharField(
+        max_length=100, null=True, blank=True,
+        help_text='Third-party PII. Staff review only; never expose to drivers or logs.',
+    )
+    rc_name_match = models.CharField(
+        max_length=15, choices=NAME_MATCH_CHOICES, null=True, blank=True,
+    )
+    rc_vehicle_class = models.CharField(max_length=50, null=True, blank=True)
+    rc_fuel_type = models.CharField(max_length=30, null=True, blank=True)
+    rc_fitness_valid_upto = models.DateField(null=True, blank=True)
+    rc_insurance_valid_upto = models.DateField(null=True, blank=True)
+
     class Meta:
         verbose_name = 'vehicle'
         verbose_name_plural = 'vehicles'
         indexes = [
             models.Index(fields=['user', 'is_active']),
+            models.Index(fields=['registration_number'], name='idx_vehicle_regno'),
+            models.Index(fields=['rc_verification_status'], name='idx_vehicle_rc_status'),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['rc_verification_ref'],
+                condition=models.Q(rc_verification_ref__isnull=False),
+                name='uq_vehicle_rc_verification_ref',
+            ),
+        ]
+        permissions = [
+            ('review_rc', 'Can review and resolve RC verification'),
         ]
 
     def __str__(self):

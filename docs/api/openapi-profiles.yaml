@@ -427,7 +427,7 @@ components:
 
     RoleSwitchResponse:
       type: object
-      required: [active_role, onboarding_status, dl_verification_status]
+      required: [active_role, onboarding_status, dl_verification_status, next_step]
       properties:
         active_role:
           type: string
@@ -435,24 +435,27 @@ components:
           example: driver
         onboarding_status:
           type: string
-          enum: [complete, pending_verification, awaiting_vehicle, pending_rc_verification]
+          enum: [complete, awaiting_dl, pending_verification, awaiting_vehicle, pending_rc_verification]
           description: |
-            `awaiting_vehicle` and `pending_rc_verification` are only returned for a switch to
-            driver while `RC_VERIFICATION_ENABLED` is on.
+            `awaiting_dl` is returned when a user with no verified or pending DL switches to driver
+            (driver setup starts). `awaiting_vehicle` is returned when a user with a verified DL and no
+            active vehicle (and not grandfathered) switches to driver, in either flag mode.
+            `pending_rc_verification` is only returned while `RC_VERIFICATION_ENABLED` is on.
           example: complete
         dl_verification_status:
           type: string
           nullable: true
           enum: [verified, pending, rejected, null]
+          description: '`null` when the user has never submitted a DL.'
           example: verified
         next_step:
           type: string
-          enum: [vehicle_registration, awaiting_rc_verification]
+          enum: [none, dl_submission, awaiting_verification, vehicle_registration, awaiting_rc_verification]
           description: |
-            Optional, additive. Present only when the resulting `onboarding_status` is
-            `awaiting_vehicle` (`vehicle_registration`) or `pending_rc_verification`
-            (`awaiting_rc_verification`); omitted otherwise.
-          example: vehicle_registration
+            The client's next onboarding step for the resulting `onboarding_status` (same mapping as
+            `GET /api/onboarding/status/`). Always present. It was previously present only for
+            `awaiting_vehicle` / `pending_rc_verification`; the field is additive.
+          example: none
 
     VehicleRegistrationRequest:
       type: object
@@ -1757,29 +1760,38 @@ paths:
     patch:
       summary: Switch active role
       description: |
-        Switch between driver and passenger roles after onboarding is complete.
+        Switch the active role between driver and passenger. This is also how a passenger becomes a
+        driver: switching to driver without a verified DL starts driver setup.
 
-        **Rules (flag off)**:
-        - Requires `onboarding_status` of `complete` or `pending_verification`; otherwise returns
-          `403 onboarding_incomplete` (with `onboarding_status` and `next_step` in `error`)
-        - Switching to **passenger**: always immediate
-        - Switching to **driver**: requires verified DL
-          - If DL is verified → immediate switch, status = `complete`
-          - If DL is pending → switch allowed, status = `pending_verification` (HTTP 202)
-          - If no DL or rejected → returns 400 with code `dl_required`
+        **Eligibility** (both flag modes): `onboarding_status` must be one of `complete`, `awaiting_dl`,
+        `pending_verification`, `awaiting_vehicle`, `pending_rc_verification`. Users who have not finished
+        role selection and profile details (`not_started`, `role_selected`) receive
+        `403 onboarding_incomplete` (with `onboarding_status` and `next_step` in `error`).
 
-        **Additional behaviour with `RC_VERIFICATION_ENABLED` on**:
-        - `awaiting_vehicle` and `pending_rc_verification` users may also call this endpoint.
-        - Switching to **passenger** from `awaiting_vehicle` or `pending_rc_verification` is allowed and
-          sets `onboarding_status = complete`, so the user is not left behind the onboarding gate.
-        - Switching to **driver** with a verified DL derives the status from the newest active vehicle:
-          verified (or a legacy vehicle with no RC status, or a grandfathered `complete` driver with no
-          vehicle) → `complete`; pending → `pending_rc_verification`; rejected → `awaiting_vehicle`.
-        - A user currently in `awaiting_vehicle` cannot switch to driver (`400 invalid_onboarding_state`).
+        **Switching to passenger** (always possible, both flag modes): immediate. From any eligible state
+        the result is `onboarding_status = complete`, `active_role = passenger`. Existing
+        `DriverVerification` and `Vehicle` rows are kept, so nobody is locked out of the app mid driver setup.
 
-        The optional `next_step` key is returned only when the resulting `onboarding_status` is
-        `awaiting_vehicle` (`vehicle_registration`) or `pending_rc_verification`
-        (`awaiting_rc_verification`). Only `pending_verification` returns HTTP 202.
+        **Switching to driver** (a request for the role the user already has is a no-op):
+        - DL **verified**: the status is derived from the vehicle so `complete` is never reached without a
+          vehicle.
+          - An active vehicle exists, or the user is grandfathered (`vehicle_step_exempt`) -> `complete`.
+            With `RC_VERIFICATION_ENABLED` on the vehicle's RC status decides: verified or legacy (no RC
+            status) -> `complete`; pending -> `pending_rc_verification`; rejected -> `awaiting_vehicle`.
+            With the flag off an active vehicle always gives `complete`.
+          - No active vehicle and not grandfathered -> `awaiting_vehicle`, `next_step = vehicle_registration`.
+        - DL **pending**: `pending_verification` (HTTP 202), unchanged.
+        - **No DL submitted, or DL rejected**: driver setup starts. `active_role = driver`,
+          `onboarding_status = awaiting_dl`, `next_step = dl_submission` (HTTP 200). The user then follows
+          the normal flow: `POST /api/onboarding/driver/dl/`, then vehicle registration. The DL attempt
+          limit still applies to resubmission after a rejection.
+        - A user in `awaiting_vehicle` whose `active_role` is not yet `driver` (inconsistent legacy data
+          only) cannot switch to driver: with the flag on this returns `400 invalid_onboarding_state`; with
+          the flag off it returns `403 onboarding_incomplete`. Switching such a user to passenger
+          completes them, after which the switch to driver is derived as above.
+
+        Only `pending_verification` returns HTTP 202. The former `400 dl_required` response is no longer
+        returned by this endpoint.
       operationId: role_switch
       tags: [Profile]
       security:
@@ -1804,8 +1816,22 @@ paths:
                       data:
                         $ref: '#/components/schemas/RoleSwitchResponse'
               examples:
+                driver_setup_started:
+                  summary: Passenger with no DL (or a rejected DL) switched to driver; driver setup starts
+                  value:
+                    success: true
+                    message: Role switched successfully.
+                    data:
+                      active_role: driver
+                      onboarding_status: awaiting_dl
+                      dl_verification_status: null
+                      next_step: dl_submission
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-17T10:00:00Z"
                 complete:
-                  summary: Switched to driver, onboarding complete
+                  summary: Switched to driver (verified DL and an active vehicle), onboarding complete
                   value:
                     success: true
                     message: Role switched successfully.
@@ -1813,6 +1839,7 @@ paths:
                       active_role: driver
                       onboarding_status: complete
                       dl_verification_status: verified
+                      next_step: none
                     error: null
                     meta:
                       request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
@@ -1832,7 +1859,7 @@ paths:
                       request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                       timestamp: "2026-10-15T10:00:00Z"
                 awaiting_vehicle:
-                  summary: (flag on) Switched to driver, previous vehicle was rejected
+                  summary: Switched to driver; no active vehicle (either flag mode) or previous vehicle was rejected (flag on)
                   value:
                     success: true
                     message: Role switched successfully.
@@ -1845,8 +1872,8 @@ paths:
                     meta:
                       request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                       timestamp: "2026-10-15T10:00:00Z"
-                passenger_from_awaiting_vehicle:
-                  summary: (flag on) awaiting_vehicle or pending_rc_verification driver switched to passenger
+                passenger_from_awaiting_states:
+                  summary: awaiting_dl, awaiting_vehicle, pending_verification or pending_rc_verification user switched to passenger (both flag modes)
                   value:
                     success: true
                     message: Role switched successfully.
@@ -1854,6 +1881,7 @@ paths:
                       active_role: passenger
                       onboarding_status: complete
                       dl_verification_status: verified
+                      next_step: none
                     error: null
                     meta:
                       request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
@@ -1875,36 +1903,23 @@ paths:
                   active_role: driver
                   onboarding_status: pending_verification
                   dl_verification_status: pending
+                  next_step: awaiting_verification
                 error: null
                 meta:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '400':
           description: |
-            `dl_required` - DL verification required to switch to driver.
             `invalid_role` - `role` is not `driver` or `passenger` (a missing or null `role` returns the
             generic `invalid_request`).
-            `invalid_onboarding_state` - (flag on) a user in `awaiting_vehicle` switching to driver.
+            `invalid_onboarding_state` - (flag on) a user in `awaiting_vehicle` whose `active_role` is not
+            `driver` (inconsistent legacy data) switching to driver; no state changes.
             A user whose onboarding is not far enough along receives `403 onboarding_incomplete` instead.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
               examples:
-                dl_required:
-                  summary: DL verification required
-                  value:
-                    success: false
-                    message: Driving licence verification is required before acting as a driver.
-                    data: null
-                    error:
-                      code: dl_required
-                      detail: Driving licence verification is required before acting as a driver.
-                      fields: null
-                      retry_after: null
-                    meta:
-                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
-                      timestamp: "2026-09-23T10:00:00Z"
                 invalid_role:
                   summary: Unsupported role value
                   value:
@@ -1921,14 +1936,14 @@ paths:
                       request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                       timestamp: "2026-10-17T10:00:00Z"
                 invalid_onboarding_state:
-                  summary: (flag on) awaiting_vehicle user cannot switch to driver
+                  summary: (flag on) awaiting_vehicle user whose active_role is not driver cannot switch to driver
                   value:
                     success: false
-                    message: Onboarding must be complete before switching roles.
+                    message: Finish vehicle registration first, or switch to passenger.
                     data: null
                     error:
                       code: invalid_onboarding_state
-                      detail: Onboarding must be complete before switching roles.
+                      detail: Finish vehicle registration first, or switch to passenger.
                       fields: null
                       retry_after: null
                     meta:
@@ -1938,9 +1953,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            `onboarding_incomplete` - the user's onboarding state is not eligible for a role switch
-            (not yet `complete` / `pending_verification`; with the RC flag on, also not
-            `awaiting_vehicle` / `pending_rc_verification`). The `error` object carries the user's current
+            `onboarding_incomplete` - the user has not finished role selection and profile details
+            (`not_started` or `role_selected`), so they are not eligible for a role switch. (Also returned,
+            with the flag off, for an `awaiting_vehicle` user whose `active_role` is not `driver` switching
+            to driver; inconsistent legacy data only.) The `error` object carries the user's current
             `onboarding_status` and `next_step`, in the same shape the onboarding gate returns; a user
             with no profile yet is reported as `not_started` / `role_selection`.
           content:
@@ -1961,8 +1977,8 @@ paths:
                   detail: Onboarding must be completed before accessing this endpoint.
                   fields: null
                   retry_after: null
-                  onboarding_status: awaiting_dl
-                  next_step: dl_submission
+                  onboarding_status: role_selected
+                  next_step: profile
                 meta:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-10-17T10:00:00Z"

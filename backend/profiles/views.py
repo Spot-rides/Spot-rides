@@ -14,14 +14,16 @@ All success responses use ApiResponse; errors are raised as domain exceptions.
 
 import logging
 
+from django.conf import settings
 from rest_framework import status
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.response import ApiResponse
 from profiles.models import UserProfile
-from profiles.permissions import IsDriverRole
+from profiles.permissions import IsDriverRole, RequireDriverRole
 from profiles.serializers import (
     DLStatusSerializer,
     DLSubmissionResponseSerializer,
@@ -35,14 +37,19 @@ from profiles.serializers import (
     RoleSwitchSerializer,
     VehicleRegistrationSerializer,
     VehicleRegistrationResponseSerializer,
+    VehicleStatusSerializer,
     WebhookPayloadSerializer,
 )
 from profiles.services.onboarding import (
+    compute_next_step,
     get_or_create_profile,
+    next_step_for_status,
     register_vehicle,
     set_profile_details,
     set_role,
     switch_role,
+    OnboardingNotEligibleForSwitch,
+    VehicleStepIncomplete,
 )
 from profiles.services.dl_verification import (
     process_webhook_result,
@@ -54,9 +61,13 @@ from profiles.exceptions import (
     DLAlreadyVerified,
     DLNotVerified,
     DLProviderError,
-    DLRequired,
     InvalidOnboardingState,
+    InvalidRegistrationFormat,
+    InvalidRole,
+    OnboardingIncomplete,
+    InvalidVehicleType,
     InvalidWebhookSignature,
+    MalformedWebhookPayload,
     MaxDLAttemptsExceeded,
     NotADriver,
     ProfileAlreadySet,
@@ -66,6 +77,20 @@ from profiles.exceptions import (
 
 
 logger = logging.getLogger('profiles')
+
+
+def _validate_role_payload(serializer):
+    """Validate a role payload; an unsupported role value maps to 400 invalid_role.
+
+    A missing/null role keeps the generic 400 invalid_request.
+    """
+    try:
+        serializer.is_valid(raise_exception=True)
+    except ValidationError as exc:
+        codes = exc.get_codes()
+        if isinstance(codes, dict) and 'invalid_choice' in (codes.get('role') or []):
+            raise InvalidRole(fields={'role': [str(m) for m in exc.detail['role']]})
+        raise
 
 
 class OnboardingStatusView(APIView):
@@ -80,27 +105,24 @@ class OnboardingStatusView(APIView):
     def get(self, request):
         profile = get_or_create_profile(request.user)
 
-        # Determine next_step based on state
-        next_step_map = {
-            UserProfile.NOT_STARTED: 'role_selection',
-            UserProfile.ROLE_SELECTED: 'profile',
-            UserProfile.AWAITING_DL: 'dl_submission',
-            UserProfile.PENDING_VERIFICATION: 'awaiting_verification',
-            UserProfile.AWAITING_VEHICLE: 'vehicle_registration',
-            UserProfile.COMPLETE: 'none'
-        }
-
         # Get DL verification status if driver
         dl_status = None
         if hasattr(request.user, 'driver_verification'):
             dl_status = request.user.driver_verification.dl_verification_status
 
+        # No vehicle query unless RC verification is on
+        rc_status = None
+        if settings.RC_VERIFICATION_ENABLED:
+            vehicle = request.user.vehicles.filter(is_active=True).order_by('-id').first()
+            rc_status = vehicle.rc_verification_status if vehicle else None
+
         data = {
             'onboarding_status': profile.onboarding_status,
             'active_role': profile.active_role,
-            'next_step': next_step_map.get(profile.onboarding_status, 'none'),
+            'next_step': compute_next_step(profile),
             'profile_complete': profile.first_name is not None,
-            'dl_verification_status': dl_status
+            'dl_verification_status': dl_status,
+            'rc_verification_status': rc_status,
         }
 
         serializer = OnboardingStatusSerializer(data)
@@ -117,7 +139,7 @@ class RoleSelectView(APIView):
 
     def post(self, request):
         serializer = RoleSelectionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        _validate_role_payload(serializer)
 
         role = serializer.validated_data['role']
 
@@ -132,13 +154,10 @@ class RoleSelectView(APIView):
             # Catch-all for other ValueError cases
             raise InvalidOnboardingState(detail=str(e))
 
-        # Determine next step
-        next_step = 'profile'
-
         response_data = {
             'active_role': profile.active_role,
             'onboarding_status': profile.onboarding_status,
-            'next_step': next_step
+            'next_step': compute_next_step(profile)
         }
 
         response_serializer = RoleSelectionResponseSerializer(response_data)
@@ -179,15 +198,9 @@ class ProfileSubmitView(APIView):
             # Catch-all for other ValueError cases
             raise InvalidOnboardingState(detail=str(e))
 
-        # Determine next step based on new status
-        next_step_map = {
-            UserProfile.COMPLETE: 'none',
-            UserProfile.AWAITING_DL: 'dl_submission'
-        }
-
         response_data = {
             'onboarding_status': profile.onboarding_status,
-            'next_step': next_step_map.get(profile.onboarding_status, 'none')
+            'next_step': compute_next_step(profile)
         }
 
         response_serializer = ProfileDetailsResponseSerializer(response_data)
@@ -234,17 +247,10 @@ class DLSubmitView(APIView):
         dl_status = result['dl_verification_status']
         onboarding_status = result['onboarding_status']
 
-        next_step_map = {
-            UserProfile.AWAITING_VEHICLE: 'vehicle_registration',
-            UserProfile.PENDING_VERIFICATION: 'awaiting_verification',
-            UserProfile.AWAITING_DL: 'dl_submission',
-            UserProfile.COMPLETE: 'none',
-        }
-
         response_data = {
             'dl_verification_status': dl_status,
             'onboarding_status': onboarding_status,
-            'next_step': next_step_map.get(onboarding_status, 'none'),
+            'next_step': next_step_for_status(onboarding_status),
             'reference_id': result.get('reference_id')
         }
 
@@ -340,18 +346,30 @@ class DLWebhookView(APIView):
         return Response({'detail': 'Webhook processed successfully.'}, status=status.HTTP_200_OK)
 
 
+def _raise_vehicle_validation_error(errors):
+    """Map vehicle request validation failures onto the contract's error codes."""
+    if 'registration_number' in errors:
+        messages = errors['registration_number']
+        raise InvalidRegistrationFormat(detail=str(messages[0]) if messages else None)
+    if 'vehicle_type' in errors:
+        raise InvalidVehicleType()
+    raise ValidationError(errors)
+
+
 class VehicleRegisterView(APIView):
     """POST /api/onboarding/driver/vehicle/ — Register vehicle during driver onboarding.
 
     Only accessible to drivers with verified DL (onboarding_status=AWAITING_VEHICLE).
-    Creates Vehicle record and completes onboarding.
+    With RC verification off this creates the Vehicle and completes onboarding; with it on
+    the outcome depends on RC verification (200 complete / 202 pending / 422 rejected).
     """
 
-    permission_classes = [IsAuthenticated, IsDriverRole]
+    permission_classes = [IsAuthenticated, RequireDriverRole]
 
     def post(self, request):
         serializer = VehicleRegistrationSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            _raise_vehicle_validation_error(serializer.errors)
 
         try:
             profile, vehicle = register_vehicle(
@@ -361,6 +379,8 @@ class VehicleRegisterView(APIView):
             )
         except ValueError as e:
             error_msg = str(e).lower()
+            if request.user.profile.onboarding_status == UserProfile.COMPLETE:
+                raise VehicleAlreadyRegistered()
             if 'dl' in error_msg or 'verified' in error_msg:
                 raise DLNotVerified()
             elif 'already registered' in error_msg:
@@ -369,14 +389,23 @@ class VehicleRegisterView(APIView):
 
         response_data = {
             'onboarding_status': profile.onboarding_status,
-            'next_step': 'none',
+            'next_step': compute_next_step(profile),
             'vehicle': {
                 'registration_number': vehicle.registration_number,
                 'vehicle_type': vehicle.vehicle_type,
-            }
+            },
+            'rc_verification_status': vehicle.rc_verification_status,
+            'rejection_reason': None,
+            'reference_id': vehicle.rc_verification_ref,
         }
 
         response_serializer = VehicleRegistrationResponseSerializer(response_data)
+        if profile.onboarding_status == UserProfile.PENDING_RC_VERIFICATION:
+            return ApiResponse(
+                response_serializer.data,
+                message='Vehicle submitted for verification.',
+                status=status.HTTP_202_ACCEPTED
+            )
         return ApiResponse(
             response_serializer.data,
             message='Vehicle registered successfully. Onboarding complete.',
@@ -384,33 +413,90 @@ class VehicleRegisterView(APIView):
         )
 
 
-class RoleSwitchView(APIView):
-    """PATCH /api/profile/role/ — Switch active role after onboarding complete.
+class VehicleStatusView(APIView):
+    """GET /api/onboarding/driver/vehicle/status/ — Poll vehicle RC verification status.
 
-    Requires onboarding_status=COMPLETE (or PENDING_VERIFICATION for edge cases).
-    Switching to driver requires verified DL or pending DL.
+    Not blocked by the onboarding gate. With RC verification off, RC fields are null.
+    """
+
+    permission_classes = [IsAuthenticated, RequireDriverRole]
+
+    def get(self, request):
+        from profiles.services.rc_verification import get_vehicle_status
+
+        serializer = VehicleStatusSerializer(get_vehicle_status(request.user))
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class RCWebhookView(APIView):
+    """POST /api/onboarding/driver/vehicle/rc/webhook/ — Receive an asynchronous RC result.
+
+    Flag off: 404 with nothing read or changed. Flag on: the signature is verified before
+    the payload is parsed and before any database access.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        if not settings.RC_VERIFICATION_ENABLED:
+            raise NotFound()
+
+        from profiles.adapters import RCAdapterError, get_rc_adapter
+        from profiles.services.rc_verification import process_rc_webhook
+
+        try:
+            adapter = get_rc_adapter()
+        except Exception as exc:
+            logger.error('onboarding.rc.provider_error', extra={'error_type': type(exc).__name__})
+            raise InvalidWebhookSignature()
+
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        if not adapter.validate_webhook(headers, request.body):
+            logger.warning('onboarding.rc.webhook.invalid_signature')
+            raise InvalidWebhookSignature()
+
+        try:
+            result = adapter.parse_webhook(request.body)
+        except RCAdapterError:
+            raise MalformedWebhookPayload()
+
+        logger.info('onboarding.rc.webhook.received', extra={'reference_id': result.reference_id})
+        process_rc_webhook(result)
+
+        return Response({'detail': 'Webhook processed successfully.'}, status=status.HTTP_200_OK)
+
+
+class RoleSwitchView(APIView):
+    """PATCH /api/profile/role/ — Switch active role.
+
+    Allowed once the user has finished profile setup. Switching to passenger always works and
+    completes the user. Switching to driver without a verified DL starts driver setup
+    (awaiting_dl, next_step=dl_submission); with a verified DL the status is derived from the
+    vehicle; with a pending DL it is pending_verification (202).
     """
 
     permission_classes = [IsAuthenticated]  # Note: NOT IsOnboardingComplete to allow pending users
 
     def patch(self, request):
         serializer = RoleSwitchSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        _validate_role_payload(serializer)
 
         new_role = serializer.validated_data['role']
 
         try:
             profile = switch_role(request.user, new_role)
-        except ValueError as e:
-            error_msg = str(e).lower()
-            if 'dl' in error_msg or 'verification' in error_msg:
-                raise DLRequired()
-            elif 'not complete' in error_msg:
-                raise InvalidOnboardingState(detail='Onboarding must be complete before switching roles.')
-            elif 'invalid role' in error_msg:
-                raise InvalidOnboardingState(detail='Invalid role. Must be "driver" or "passenger".')
-            # Catch-all for other ValueError cases
-            raise InvalidOnboardingState(detail=str(e))
+        except OnboardingNotEligibleForSwitch as e:
+            raise OnboardingIncomplete(extra={
+                'onboarding_status': e.onboarding_status,
+                'next_step': next_step_for_status(e.onboarding_status),
+            })
+        except VehicleStepIncomplete:
+            raise InvalidOnboardingState(
+                detail='Finish vehicle registration first, or switch to passenger.'
+            )
+        except ValueError:
+            raise InvalidOnboardingState(detail='Invalid role. Must be "driver" or "passenger".')
 
         # Get DL status if switching to/from driver
         dl_status = None
@@ -420,7 +506,8 @@ class RoleSwitchView(APIView):
         response_data = {
             'active_role': profile.active_role,
             'onboarding_status': profile.onboarding_status,
-            'dl_verification_status': dl_status
+            'dl_verification_status': dl_status,
+            'next_step': compute_next_step(profile),
         }
 
         response_serializer = RoleSwitchResponseSerializer(response_data)

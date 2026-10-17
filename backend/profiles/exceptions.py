@@ -22,6 +22,13 @@ class NotADriver(ApiError):
     default_detail = 'This endpoint is only accessible to drivers.'
 
 
+class InvalidRole(ApiError):
+    """Role value is not one of the allowed roles."""
+    status_code = status.HTTP_400_BAD_REQUEST
+    error_code = 'invalid_role'
+    default_detail = 'Role must be "driver" or "passenger".'
+
+
 class InvalidAge(ApiError):
     """Age is outside the allowed range (18-80)."""
     status_code = status.HTTP_400_BAD_REQUEST
@@ -132,3 +139,59 @@ class VehicleAlreadyRegistered(ApiError):
     status_code = status.HTTP_409_CONFLICT
     error_code = 'vehicle_already_registered'
     default_detail = 'A vehicle is already registered for this account.'
+
+
+class RCVerificationPending(ApiError):
+    """Vehicle submission while RC verification is pending."""
+    status_code = status.HTTP_409_CONFLICT
+    error_code = 'rc_verification_pending'
+    default_detail = 'Your vehicle is already being verified.'
+
+
+class RCAlreadyVerified(ApiError):
+    """Vehicle submission when the vehicle RC is already verified."""
+    status_code = status.HTTP_409_CONFLICT
+    error_code = 'rc_already_verified'
+    default_detail = 'Your vehicle is already verified.'
+
+
+class RCProviderError(ApiError):
+    """RC verification provider call failed (no attempt consumed)."""
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    error_code = 'rc_verification_provider_error'
+    default_detail = 'Vehicle verification is temporarily unavailable. Please try again.'
+
+
+class MaxRCAttemptsExceeded(ApiError):
+    """Maximum RC submission attempts reached; staff action required."""
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    error_code = 'max_rc_attempts_exceeded'
+    default_detail = 'Maximum vehicle verification attempts exceeded. Please contact support.'
+
+
+class RCVerificationRejected(ApiError):
+    """RC verification rejected the vehicle."""
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    error_code = 'rc_verification_rejected'
+    default_detail = 'Vehicle verification was rejected.'
+
+
+class RCReferenceNotFound(ApiError):
+    """Webhook referenced an unknown RC verification reference."""
+    status_code = status.HTTP_404_NOT_FOUND
+    error_code = 'rc_reference_not_found'
+    default_detail = 'RC verification reference not found.'
+
+
+class MalformedWebhookPayload(ApiError):
+    """Webhook body could not be parsed."""
+    status_code = status.HTTP_400_BAD_REQUEST
+    error_code = 'invalid_webhook_payload'
+    default_detail = 'Webhook payload is invalid.'
+
+
+class RCReviewStateError(ApiError):
+    """Admin review action not valid for the vehicle's current state."""
+    status_code = status.HTTP_409_CONFLICT
+    error_code = 'rc_review_invalid_state'
+    default_detail = 'This vehicle is not in a state that allows this action.'

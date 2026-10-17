@@ -25,11 +25,16 @@ class ConditionalOnboardingGate(permissions.BasePermission):
             return False
 
         # Import here to avoid circular dependency
+        from profiles.exceptions import OnboardingIncomplete
         from profiles.models import UserProfile
+        from profiles.services.onboarding import compute_next_step
 
-        # Check if user has profile and onboarding is complete
-        if hasattr(request.user, 'profile'):
-            return request.user.profile.onboarding_status == UserProfile.COMPLETE
+        profile = getattr(request.user, 'profile', None)
+        if profile is not None and profile.onboarding_status == UserProfile.COMPLETE:
+            return True
 
-        # No profile yet = not complete
-        return False
+        # No profile yet is reported as not_started.
+        raise OnboardingIncomplete(extra={
+            'onboarding_status': profile.onboarding_status if profile else UserProfile.NOT_STARTED,
+            'next_step': compute_next_step(profile),
+        })

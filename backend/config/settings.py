@@ -111,6 +111,35 @@ else:
 # Onboarding gate feature flag (default: False to avoid breaking existing clients)
 ONBOARDING_GATE_ENABLED = config('ONBOARDING_GATE_ENABLED', default=False, cast=bool)
 
+# Vehicle RC verification (FEAT-002 FR-32..FR-50). Default OFF: the vehicle step is self-declared.
+# The flag is read at call time; nothing below is needed while it is OFF.
+RC_VERIFICATION_ENABLED = config('RC_VERIFICATION_ENABLED', default=False, cast=bool)
+RC_ADAPTER_CLASS = config('RC_ADAPTER_CLASS', default='profiles.adapters.mock.MockRCVerificationAdapter')
+RC_ADAPTER_MOCK_RESULT = config('RC_ADAPTER_MOCK_RESULT', default='sync_verified')
+RC_PROVIDER_TIMEOUT_SECONDS = config('RC_PROVIDER_TIMEOUT_SECONDS', default=5, cast=float)
+RC_MAX_ATTEMPTS = config('RC_MAX_ATTEMPTS', default=3, cast=int)
+RC_WEBHOOK_SECRET = config('RC_WEBHOOK_SECRET', default='')
+# Derived from the environment DEBUG at import so the test runner forcing DEBUG=False cannot trip it.
+RC_MOCK_ADAPTER_FORBIDDEN = RC_VERIFICATION_ENABLED and not DEBUG
+
+if RC_VERIFICATION_ENABLED:
+    from django.core.exceptions import ImproperlyConfigured
+
+    _rc_problems = []
+    if RC_MAX_ATTEMPTS < 1:
+        _rc_problems.append('RC_MAX_ATTEMPTS must be >= 1')
+    if RC_PROVIDER_TIMEOUT_SECONDS <= 0:
+        _rc_problems.append('RC_PROVIDER_TIMEOUT_SECONDS must be > 0')
+    if not DEBUG:
+        if 'mock' in RC_ADAPTER_CLASS.lower():
+            _rc_problems.append('the mock RC adapter is not allowed when DEBUG is off')
+        if not RC_WEBHOOK_SECRET or RC_WEBHOOK_SECRET.startswith('PLACEHOLDER'):
+            _rc_problems.append('RC_WEBHOOK_SECRET must be set to a real secret when DEBUG is off')
+        if not ONBOARDING_GATE_ENABLED:
+            _rc_problems.append('ONBOARDING_GATE_ENABLED must be True when DEBUG is off')
+    if _rc_problems:
+        raise ImproperlyConfigured('Invalid RC verification settings: ' + '; '.join(_rc_problems))
+
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',

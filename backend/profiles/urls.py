@@ -15,6 +15,8 @@ urlpatterns = [
     path('onboarding/driver/dl/status/', views.DLStatusView.as_view(), name='onboarding-dl-status'),
     path('onboarding/driver/dl/webhook/', views.DLWebhookView.as_view(), name='onboarding-dl-webhook'),
     path('onboarding/driver/vehicle/', views.VehicleRegisterView.as_view(), name='vehicle-register'),
+    path('onboarding/driver/vehicle/status/', views.VehicleStatusView.as_view(), name='vehicle-status'),
+    path('onboarding/driver/vehicle/rc/webhook/', views.RCWebhookView.as_view(), name='vehicle-rc-webhook'),
 
     # Profile management endpoints
     path('profile/role/', views.RoleSwitchView.as_view(), name='profile-role-switch'),

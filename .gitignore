@@ -17,3 +17,4 @@ frontend/dist/
 .DS_Store
 *.env
 .claude/settings.json
+!.env.example

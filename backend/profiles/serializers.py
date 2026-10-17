@@ -17,6 +17,7 @@ class OnboardingStatusSerializer(serializers.Serializer):
     next_step = serializers.CharField()
     profile_complete = serializers.BooleanField()
     dl_verification_status = serializers.CharField(allow_null=True)
+    rc_verification_status = serializers.CharField(allow_null=True)
 
 
 class RoleSelectionSerializer(serializers.Serializer):
@@ -105,6 +106,7 @@ class RoleSwitchResponseSerializer(serializers.Serializer):
     active_role = serializers.CharField()
     onboarding_status = serializers.CharField()
     dl_verification_status = serializers.CharField(allow_null=True)
+    next_step = serializers.CharField(required=False)
 
 
 class WebhookPayloadSerializer(serializers.Serializer):
@@ -133,3 +135,17 @@ class VehicleRegistrationResponseSerializer(serializers.Serializer):
     onboarding_status = serializers.CharField()
     next_step = serializers.CharField()
     vehicle = serializers.DictField()
+    rc_verification_status = serializers.CharField(allow_null=True)
+    rejection_reason = serializers.CharField(allow_null=True)
+    reference_id = serializers.CharField(allow_null=True)
+
+
+class VehicleStatusSerializer(serializers.Serializer):
+    """Response for GET /api/onboarding/driver/vehicle/status/ (plain serializer: no owner data)"""
+    onboarding_status = serializers.CharField()
+    next_step = serializers.CharField()
+    rc_verification_status = serializers.CharField(allow_null=True)
+    rejection_reason = serializers.CharField(allow_null=True)
+    registration_number = serializers.CharField(allow_null=True)
+    vehicle_type = serializers.CharField(allow_null=True)
+    rc_attempts_remaining = serializers.IntegerField(allow_null=True)

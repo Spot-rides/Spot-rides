@@ -5,11 +5,34 @@ All state-changing functions use database transactions.
 """
 
 from typing import Optional
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from profiles.models import UserProfile
 
 User = get_user_model()
+
+NEXT_STEP_BY_STATUS = {
+    UserProfile.NOT_STARTED: 'role_selection',
+    UserProfile.ROLE_SELECTED: 'profile',
+    UserProfile.AWAITING_DL: 'dl_submission',
+    UserProfile.PENDING_VERIFICATION: 'awaiting_verification',
+    UserProfile.AWAITING_VEHICLE: 'vehicle_registration',
+    UserProfile.PENDING_RC_VERIFICATION: 'awaiting_rc_verification',
+    UserProfile.COMPLETE: 'none',
+}
+
+
+def next_step_for_status(onboarding_status: str) -> str:
+    """Single source of truth for the client's next_step."""
+    return NEXT_STEP_BY_STATUS.get(onboarding_status, 'none')
+
+
+def compute_next_step(profile: Optional[UserProfile]) -> str:
+    """next_step for a profile; a missing profile is reported as not_started."""
+    if profile is None:
+        return next_step_for_status(UserProfile.NOT_STARTED)
+    return next_step_for_status(profile.onboarding_status)
 
 
 def get_or_create_profile(user: User) -> UserProfile:
@@ -101,8 +124,24 @@ def set_profile_details(
     return profile
 
 
-@transaction.atomic
 def register_vehicle(user: User, registration_number: str, vehicle_type: str):
+    """Register a vehicle during driver onboarding.
+
+    With RC_VERIFICATION_ENABLED off (default) this is exactly the self-declared flow.
+    The RC module is only imported when the flag is on.
+
+    Returns:
+        Tuple of (updated UserProfile, Vehicle)
+    """
+    if not settings.RC_VERIFICATION_ENABLED:
+        return _register_vehicle_self_declared(user, registration_number, vehicle_type)
+
+    from profiles.services import rc_verification
+    return rc_verification.register_vehicle_with_rc(user, registration_number, vehicle_type)
+
+
+@transaction.atomic
+def _register_vehicle_self_declared(user: User, registration_number: str, vehicle_type: str):
     """Register a vehicle during driver onboarding.
 
     Only valid when onboarding_status is AWAITING_VEHICLE.
@@ -147,9 +186,57 @@ def register_vehicle(user: User, registration_number: str, vehicle_type: str):
     return profile, vehicle
 
 
+class OnboardingNotEligibleForSwitch(ValueError):
+    """Role switch rejected because the user's onboarding state is not eligible."""
+
+    def __init__(self, onboarding_status: str):
+        super().__init__("Onboarding not complete")
+        self.onboarding_status = onboarding_status
+
+
+class VehicleStepIncomplete(ValueError):
+    """Switch to driver rejected: the user is in awaiting_vehicle and must finish the vehicle step
+    (or switch to passenger) first. Mapped to 400 invalid_onboarding_state (FR-55)."""
+
+
+# States from which PATCH /api/profile/role/ is accepted. Every non-complete state is included so
+# that a user who started driver setup can always get back to passenger (never locked out).
+_SWITCH_ELIGIBLE_STATUSES = (
+    UserProfile.COMPLETE,
+    UserProfile.AWAITING_DL,
+    UserProfile.PENDING_VERIFICATION,
+    UserProfile.AWAITING_VEHICLE,
+    UserProfile.PENDING_RC_VERIFICATION,
+)
+
+
+def _status_for_verified_driver(profile: UserProfile, vehicle) -> str:
+    """Onboarding status for a user with a verified DL switching to driver.
+
+    COMPLETE is only reachable with an active vehicle or the grandfathered
+    ``vehicle_step_exempt`` marker (FR-43); otherwise the user must register a vehicle.
+    Flag on: RC status of the vehicle decides. Flag off: an active vehicle is enough.
+    """
+    if settings.RC_VERIFICATION_ENABLED:
+        from profiles.services.rc_verification import derive_driver_status
+        return derive_driver_status(profile, vehicle)
+    if vehicle is not None or profile.vehicle_step_exempt:
+        return UserProfile.COMPLETE
+    return UserProfile.AWAITING_VEHICLE
+
+
 @transaction.atomic
 def switch_role(user: User, new_role: str) -> UserProfile:
-    """Switch active role after onboarding complete.
+    """Switch active role (FR-22..FR-24, FR-43, FR-52, FR-55).
+
+    Switching to passenger is always possible from any eligible state and completes the user;
+    DriverVerification and Vehicle rows are kept.
+
+    Switching to driver:
+      - verified DL: status derived from the vehicle (never COMPLETE without a vehicle or the
+        grandfathered exemption)
+      - pending DL: PENDING_VERIFICATION
+      - no DL, or rejected DL: starts driver setup (AWAITING_DL); the normal DL -> vehicle flow follows
 
     Args:
         user: Authenticated user
@@ -159,42 +246,52 @@ def switch_role(user: User, new_role: str) -> UserProfile:
         Updated UserProfile
 
     Raises:
-        ValueError: If onboarding not complete or switching to driver without DL
+        OnboardingNotEligibleForSwitch: onboarding not started / mid-profile
+        VehicleStepIncomplete: switch to driver while in awaiting_vehicle (flag on)
+        ValueError: invalid role
     """
-    profile = get_or_create_profile(user)
+    from profiles.models import DriverVerification
 
-    if profile.onboarding_status != UserProfile.COMPLETE:
-        # Special case: allow switch if pending_verification (user can go back to passenger)
-        if profile.onboarding_status != UserProfile.PENDING_VERIFICATION:
-            raise ValueError("Onboarding not complete")
+    profile = UserProfile.objects.select_for_update().get(pk=get_or_create_profile(user).pk)
 
-    if new_role == profile.active_role:
+    if profile.onboarding_status not in _SWITCH_ELIGIBLE_STATUSES:
+        raise OnboardingNotEligibleForSwitch(profile.onboarding_status)
+
+    if new_role == UserProfile.PASSENGER:
+        if (profile.active_role, profile.onboarding_status) != (UserProfile.PASSENGER, UserProfile.COMPLETE):
+            profile.active_role = UserProfile.PASSENGER
+            profile.onboarding_status = UserProfile.COMPLETE
+            profile.save()
+        return profile
+
+    if new_role != UserProfile.DRIVER:
+        raise ValueError("Invalid role")
+
+    if profile.active_role == UserProfile.DRIVER:
         # No-op, already in that role
         return profile
 
-    # Switching to passenger: always allowed
-    if new_role == UserProfile.PASSENGER:
-        profile.active_role = new_role
-        profile.save()
-        return profile
+    if profile.onboarding_status == UserProfile.AWAITING_VEHICLE:
+        # Only reachable with inconsistent data (a passenger in awaiting_vehicle). Never derive
+        # COMPLETE from here; the user finishes the vehicle step or switches to passenger first.
+        if settings.RC_VERIFICATION_ENABLED:
+            raise VehicleStepIncomplete()
+        raise OnboardingNotEligibleForSwitch(profile.onboarding_status)
 
-    # Switching to driver: check DL status
-    if new_role == UserProfile.DRIVER:
-        if not hasattr(user, 'driver_verification'):
-            raise ValueError("DL verification required")
+    dl_status = (
+        DriverVerification.objects.filter(user=user)
+        .values_list('dl_verification_status', flat=True)
+        .first()
+    )
 
-        dl_status = user.driver_verification.dl_verification_status
+    if dl_status == DriverVerification.VERIFIED:
+        vehicle = user.vehicles.select_for_update().filter(is_active=True).order_by('-id').first()
+        profile.onboarding_status = _status_for_verified_driver(profile, vehicle)
+    elif dl_status == DriverVerification.PENDING:
+        profile.onboarding_status = UserProfile.PENDING_VERIFICATION
+    else:  # no DL row, or rejected: start (or restart) driver setup
+        profile.onboarding_status = UserProfile.AWAITING_DL
 
-        if dl_status == 'verified':
-            profile.active_role = new_role
-            profile.onboarding_status = UserProfile.COMPLETE
-        elif dl_status == 'pending':
-            profile.active_role = new_role
-            profile.onboarding_status = UserProfile.PENDING_VERIFICATION
-        else:  # None or rejected
-            raise ValueError("DL verification required")
-
-        profile.save()
-        return profile
-
-    raise ValueError("Invalid role")
+    profile.active_role = UserProfile.DRIVER
+    profile.save()
+    return profile

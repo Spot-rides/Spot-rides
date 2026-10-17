@@ -131,8 +131,11 @@ def process_webhook_result(reference_id: str, status: str, rejection_reason: str
 
     if status == 'verified':
         dl_record.dl_verified_at = timezone.now()
-        dl_record.user.profile.onboarding_status = UserProfile.AWAITING_VEHICLE
-        dl_record.user.profile.save()
+        # Only advance a user who is waiting on this DL; a user who switched to passenger in the
+        # meantime is complete and must not be gated out.
+        if dl_record.user.profile.onboarding_status == UserProfile.PENDING_VERIFICATION:
+            dl_record.user.profile.onboarding_status = UserProfile.AWAITING_VEHICLE
+            dl_record.user.profile.save()
     elif status == 'rejected':
         dl_record.dl_rejection_reason = rejection_reason
         # User remains in PENDING_VERIFICATION, can resubmit

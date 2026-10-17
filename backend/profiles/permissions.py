@@ -2,11 +2,13 @@
 
 - ``IsOnboardingComplete``: gate for all protected non-onboarding endpoints
 - ``IsDriverRole``: gate for driver-specific endpoints
+- ``RequireDriverRole``: ``IsDriverRole`` that answers ``403 not_a_driver``
 - ``IsDriverVerified``: gate for driver-facing actions (posting rides, etc)
 """
 
 from rest_framework import permissions
 
+from profiles.exceptions import NotADriver
 from profiles.models import UserProfile
 
 
@@ -46,6 +48,20 @@ class IsDriverRole(permissions.BasePermission):
             return request.user.profile.active_role == UserProfile.DRIVER
 
         return False
+
+
+class RequireDriverRole(IsDriverRole):
+    """``IsDriverRole`` that raises ``NotADriver`` (403 not_a_driver) instead of a generic denial.
+
+    Unauthenticated requests still fall through to ``IsAuthenticated`` first.
+    """
+
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            if request.user and request.user.is_authenticated:
+                raise NotADriver()
+            return False
+        return True
 
 
 class IsDriverVerified(permissions.BasePermission):
