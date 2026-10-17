@@ -1,7 +1,7 @@
 # ADR: FEAT-002 User Onboarding — Architectural Decisions
 
 **Date:** 2026-09-23
-**Updated:** 2026-10-17 (v3: vehicle RC verification, Decisions 11-26; v4: Decision 27; v5: Decision 28, role switch fix)
+**Updated:** 2026-10-17 (v3: vehicle RC verification, Decisions 11-26; v4: Decision 27; v5: Decision 28, role switch fix; v6: Decision 29, DL security hardening; v7: documentation reconciliation with the code, in-place corrections to Decisions 1, 3, 4, 6, 19 and 26 and to open items U2 and U8, new open items U10-U12)
 **Status:** accepted
 **Feature:** FEAT-002 — User Onboarding Flow
 **Author:** architect
@@ -31,7 +31,9 @@ Return `400 invalid_dl_format` if the raw input contains any lowercase letter.
 
 **Rationale.** This project already normalises user input at the service boundary (phone numbers are normalised to E.164 before validation in `accounts/services/phone.py`). Consistent normalisation is a better user experience and reduces unnecessary support contacts caused by keyboard auto-lowercase on mobile devices. The risk of masking a data entry error is low because the DL format has strict structural constraints (state code + RTO + year + serial); any genuinely wrong DL that happens to be all-uppercase will fail provider verification. The normalised value is what gets stored.
 
-**Implementation note.** The `profiles/services/dl_verification.py` service function `validate_dl_format(dl_number: str) -> str` strips whitespace, uppercases, applies the regex `^[A-Z]{2}[0-9]{2}[ -]?[0-9]{4}[0-9]{7}$`, and returns the normalised string on success or raises `InvalidDLFormat` on failure.
+**Implementation note (as originally designed; SUPERSEDED in v7, kept as history).** The `profiles/services/dl_verification.py` service function `validate_dl_format(dl_number: str) -> str` strips whitespace, uppercases, applies the regex `^[A-Z]{2}[0-9]{2}[ -]?[0-9]{4}[0-9]{7}$`, and returns the normalised string on success or raises `InvalidDLFormat` on failure.
+
+**Implementation note (v7, matches the code at `803e319`).** Normalisation and format validation are two functions in different modules, and neither raises. `profiles/utils/crypto.py::normalize_dl_number(dl_number) -> str` strips surrounding whitespace, uppercases and removes **every** space and hyphen. `profiles/services/validators.py::validate_dl_format(normalized) -> (bool, str)` matches `DL_PATTERN = ^[A-Z]{2}[0-9]{2}[0-9]{4}[0-9]{7}$` (two letters followed by 13 digits, 15 characters, no separators) and returns `(False, "Invalid DL format. Expected: XX00 0000 0000000 (13 digits after state code)")` on failure. `DLSubmissionSerializer.validate_dl_number` calls both, after `CharField(max_length=20)` has checked the raw input. The pattern with an optional `[ -]?` shown above is the requirements' FR-07 pattern for the un-normalised form; it is not what the code applies. Because all separators are stripped, the code accepts separators anywhere (for example `MH01 2011 0012345`), which is more permissive than FR-07's single optional separator (KNOWN GAP KG-06 in ARCH-002 v7). The format failure is a DRF `ValidationError`, so the response is `400 invalid_request` with `error.fields.dl_number`, not `400 invalid_dl_format`; `InvalidDLFormat` exists but is unused (KNOWN GAP KG-01, open item U10).
 
 ---
 
@@ -76,9 +78,9 @@ Drawback: the signal lives in `accounts` (or a `profiles/apps.py` receiver), whi
 - Field `dl_number` on `DriverVerification` stores the Fernet-encrypted ciphertext as a base64 string in a `CharField(256)` (ciphertext of a ~20-char DL is ~120 bytes encoded).
 - Field `dl_number_display` stores the last 4 characters of the normalised plaintext DL as `CharField(4)`.
 - Env var `DL_ENCRYPTION_KEY` holds the Fernet key (32-byte base64url; generated once with `Fernet.generate_key()`).
-- A helper `profiles/utils/crypto.py` exposes `encrypt_dl_number(plaintext) -> str` and related helpers.
-- The key is loaded via `python-decouple`: `DL_ENCRYPTION_KEY = config('DL_ENCRYPTION_KEY')`.
-- Key rotation is out of scope for v1 but is enabled by storing a `dl_key_version` column (default `1`) for future migration use.
+- A helper `profiles/utils/crypto.py` exposes `encrypt_dl_number(dl_number) -> str`, `decrypt_dl_number(encrypted_dl) -> str`, `normalize_dl_number()` and `get_dl_last_four()`. (v7: `decrypt_dl_number` has no caller today.)
+- The key is loaded via `python-decouple`, **lazily**: `profiles/utils/crypto.py::_get_fernet()` calls `config('DL_ENCRYPTION_KEY')` on every encrypt or decrypt. It is not a Django setting and nothing reads it at startup, so a missing, empty or malformed key surfaces as `ImproperlyConfigured` at the first DL submission, returned as `500 server_error`. (v7 correction: this note previously showed a module-level `DL_ENCRYPTION_KEY = config('DL_ENCRYPTION_KEY')`.) **KNOWN GAP KG-04** (SEC-002 F-15): startup validation of the key is not implemented (open item U11).
+- Key rotation is out of scope for v1. The `dl_key_version` column proposed here (default `1`) was **never added** (PLANNED, not implemented); a single Fernet key is used.
 
 **Alternatives rejected.** Hash-only (Option B) rejected because full DL is irrecoverable. Plaintext (Option C) rejected on security grounds.
 
@@ -102,17 +104,19 @@ Added to `DEFAULT_PERMISSION_CLASSES` alongside `IsAuthenticated`. Checks `reque
 
 **Implementation note.**
 `profiles/permissions.py` defines:
-- `IsOnboardingComplete` — for any authenticated endpoint outside the onboarding flow; returns `403 onboarding_incomplete` with `onboarding_status` and `next_step`.
-- `IsDriverRole` — for driver-only endpoints (`POST /api/onboarding/driver/dl/`, `POST /api/onboarding/driver/vehicle/`, `GET /api/onboarding/driver/dl/status/`); returns `403 not_a_driver` if `active_role != DRIVER`.
+- `IsOnboardingComplete` — as designed: for any authenticated endpoint outside the onboarding flow; returns `403 onboarding_incomplete` with `onboarding_status` and `next_step`. (v7: defined and unit-tested in `profiles/permissions.py` but **not wired**; see the correction below.)
+- `IsDriverRole` — for driver-only endpoints (`POST /api/onboarding/driver/dl/`, `POST /api/onboarding/driver/vehicle/`, `GET /api/onboarding/driver/dl/status/`); as designed it returns `403 not_a_driver` if `active_role != DRIVER`. (v7: in code `IsDriverRole.has_permission` returns `False`, which DRF renders as the generic `403 permission_denied`. The `403 not_a_driver` response comes from its subclass `RequireDriverRole`, added in v3 and used by `POST /api/onboarding/driver/vehicle/` and `GET /api/onboarding/driver/vehicle/status/`. `POST /api/onboarding/driver/dl/` and `GET /api/onboarding/driver/dl/status/` still use `IsDriverRole`: KNOWN GAP KG-03, open item U10.)
 - `IsDriverVerified` — for driver-facing ride endpoints; checks `dl_verification_status == VERIFIED` in addition to `active_role == DRIVER` (enforces FR-25 independently of role field).
 
 `settings.py` `DEFAULT_PERMISSION_CLASSES` becomes:
 ```python
 [
     'rest_framework.permissions.IsAuthenticated',
-    'profiles.permissions.IsOnboardingComplete',
+    'profiles.permissions.IsOnboardingComplete',   # as designed; NOT what the code uses, see the v7 correction below
 ]
 ```
+
+**Implementation correction (v7, verified against `803e319`).** The gate that is actually in `DEFAULT_PERMISSION_CLASSES` is `core.permissions.ConditionalOnboardingGate`, not `profiles.permissions.IsOnboardingComplete`: `REST_FRAMEWORK['DEFAULT_PERMISSION_CLASSES'] = ['rest_framework.permissions.IsAuthenticated', 'core.permissions.ConditionalOnboardingGate']`. The gate returns `True` unless `settings.ONBOARDING_GATE_ENABLED` is True (default False). When it is enabled and the profile is missing or not `COMPLETE`, it lazy-imports `profiles` and raises `OnboardingIncomplete(extra={'onboarding_status', 'next_step'})`, so the response is `403 onboarding_incomplete` (Decision 19). Option B (a DRF permission class that runs after authentication) is what was built; only the class name, its module and the feature flag differ from the sketch above. `IsOnboardingComplete` remains in `profiles/permissions.py` with unit tests, but nothing references it. Consequence: while the flag is False, which is the default, no endpoint is gated (SEC-002 F-17); turning the flag on is a deployment decision.
 
 ---
 
@@ -146,18 +150,24 @@ from typing import Literal, Optional
 @dataclass
 class DLVerificationResult:
     status: Literal["verified", "pending", "rejected"]
-    provider_ref: Optional[str]       # provider-issued reference ID for async lookup
-    rejection_reason: Optional[str]
+    reference_id: Optional[str] = None       # provider-issued reference ID for async lookup (v7: named reference_id in code, not provider_ref)
+    rejection_reason: Optional[str] = None
 
 class DLVerificationAdapter(ABC):
+    @classmethod
+    def from_settings(cls, settings) -> "DLVerificationAdapter":
+        """Build an instance from Django settings (v6, Decision 29). Default: cls()."""
+        return cls()
+
     @abstractmethod
-    def submit(self, dl_number: str) -> DLVerificationResult:
+    def submit(self, dl_number: str, user_id: int) -> DLVerificationResult:
         """Submit a DL number for verification.
 
         Returns a result immediately (synchronous provider) or a pending
-        result with a provider_ref for later resolution via webhook
-        (asynchronous provider). Must not raise; on provider error,
-        raises DLProviderError so the service layer can treat it as pending.
+        result with a reference_id for later resolution via webhook
+        (asynchronous provider). Raises TimeoutError on a provider timeout (the service
+        treats it as pending). Any other exception is a provider failure: the service
+        answers 422 dl_verification_provider_error and consumes no attempt (v6, Decision 29).
         """
         ...
 
@@ -167,16 +177,18 @@ class DLVerificationAdapter(ABC):
         ...
 ```
 
+(v7: in the code `status` is a plain `str` rather than a `Literal`, `reference_id` and `rejection_reason` default to `None`, and `validate_webhook` takes `(headers, body)`.)
+
 Concrete implementations:
 - `profiles/adapters/mock.py` — `MockDLVerificationAdapter` used in tests and dev; configurable to return `verified`, `pending`, or `rejected`.
-- `profiles/adapters/digilocker.py` — `DigiLockerDLVerificationAdapter` for production; uses DigiLocker Pull URI API with OAuth 2.0 authentication.
+- `profiles/adapters/digilocker.py` — `DigiLockerDLVerificationAdapter` for production; uses DigiLocker Pull URI API with OAuth 2.0 authentication. **Planned: not implemented as of v6** (Decision 29); until it exists the mock is refused whenever `DEBUG` is off.
 
 The active adapter is loaded by name from settings:
 ```
 DL_ADAPTER_CLASS = config('DL_ADAPTER_CLASS', default='profiles.adapters.mock.MockDLVerificationAdapter')
 ```
 
-The service layer calls `get_dl_adapter()` (a factory in `profiles/adapters/__init__.py`) to obtain the configured adapter instance. Business logic in `profiles/services/dl_verification.py` is adapter-agnostic.
+The service layer calls `get_dl_adapter()` (a factory in `profiles/adapters/__init__.py`) to obtain the configured adapter instance. Business logic in `profiles/services/dl_verification.py` is adapter-agnostic. (Implemented in v6: before then the DL module used a module-level `_adapter` and the factory did not exist. The factory now builds a new instance per call from `DL_ADAPTER_CLASS`, and `DLWebhookView` uses it too; see Decision 29.)
 
 **Both sync and async paths are handled in the service layer, not in the adapter.** The adapter always returns a `DLVerificationResult`; it is the `status` field (`pending` vs `verified`/`rejected`) that drives which state transition the service applies.
 
@@ -290,7 +302,7 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 **Decision.** `RCVerificationAdapter` ABC with `from_settings(cls, settings)`, `verify(registration_number, user_id)`, `validate_webhook(headers, body)` and `parse_webhook(body)`; `RCVerificationResult` frozen dataclass with every provider field optional and `owner_name` declared `repr=False`; `RCAdapterError` for non-timeout failures, builtin `TimeoutError` for timeouts. `get_rc_adapter()` loads `settings.RC_ADAPTER_CLASS` via `import_string` and calls `from_settings`; it builds a new instance per call and there is no module global and no private import in views. `timeout_seconds` is passed to the adapter, which applies it to its own HTTP calls.
 
-**Rationale.** The DL module's hardcoded global (`_adapter`, imported by views) cannot be swapped by configuration and was the exact wiring gap PLAN-003 asked not to copy. `from_settings` lets each adapter read its own settings without `isinstance` checks in the factory. `parse_webhook` is on the adapter because provider payload shapes differ, and FR-42 requires a verified webhook to feed owner/class data into the same rules as a synchronous result. The service never cuts a call short itself (no threads/signals); timeouts are an adapter responsibility, which is the only reliable place to apply them. Adapters must map "not found / blacklisted / blocked" to `rejected` so the service needs no provider-specific vocabulary.
+**Rationale.** The DL module's hardcoded global (`_adapter`, imported by views) cannot be swapped by configuration and was the exact wiring gap PLAN-003 asked not to copy (since fixed for DL as well, Decision 29). `from_settings` lets each adapter read its own settings without `isinstance` checks in the factory. `parse_webhook` is on the adapter because provider payload shapes differ, and FR-42 requires a verified webhook to feed owner/class data into the same rules as a synchronous result. The service never cuts a call short itself (no threads/signals); timeouts are an adapter responsibility, which is the only reliable place to apply them. Adapters must map "not found / blacklisted / blocked" to `rejected` so the service needs no provider-specific vocabulary.
 
 ### Decision 13 — Mock adapter modes, webhook signature, and the production guard
 
@@ -298,11 +310,11 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 **Production guard (concrete, three layers).** (1) `config/settings.py`, only when `RC_VERIFICATION_ENABLED`: raise `ImproperlyConfigured` if `not DEBUG` and `'mock' in RC_ADAPTER_CLASS.lower()` (and for an empty/placeholder `RC_WEBHOOK_SECRET`, `ONBOARDING_GATE_ENABLED` false, `RC_MAX_ATTEMPTS < 1`, `RC_PROVIDER_TIMEOUT_SECONDS <= 0`). (2) `RC_MOCK_ADAPTER_FORBIDDEN = RC_VERIFICATION_ENABLED and not DEBUG`, computed at import from the environment `DEBUG`; `get_rc_adapter()` refuses any `MockRCVerificationAdapter` subclass when it is true. (3) The mock's webhook fails closed without a secret.
 
-**Rationale.** A Django system check does not run when gunicorn/WSGI starts, so only an import-time settings raise protects every entry point. Capturing `DEBUG` at import (rather than reading `settings.DEBUG` at call time) avoids false positives because Django's test runner forces `DEBUG=False`. The webhook is HMAC over the body rather than a static header (PLAN-003 D3) so the mock exercises the same mechanism as a real provider. Residual risk: running production with `DEBUG=True` bypasses the guard; that is already a critical misconfiguration.
+**Rationale.** A Django system check does not run when gunicorn/WSGI starts, so only an import-time settings raise protects every entry point. Capturing `DEBUG` at import (rather than reading `settings.DEBUG` at call time) avoids false positives because Django's test runner forces `DEBUG=False`. The webhook is HMAC over the body rather than a static header (PLAN-003 D3) so the mock exercises the same mechanism as a real provider. Residual risk: running production with `DEBUG=True` bypasses the guard; that is already a critical misconfiguration. The DL path received the same guard in v6 (Decision 29), but unconditionally, because DL verification has no feature flag.
 
 ### Decision 14 — Provider call outside the DB transaction (three phases)
 
-**Decision.** `register_vehicle_with_rc` runs: (1) guard in a short `transaction.atomic` taking `select_for_update` on `UserProfile` then `Vehicle`; (2) the adapter call with no transaction open; (3) decision and persistence in a second short `atomic` that re-locks and re-validates. Lock order is always profile then vehicle, including webhook and admin paths. `RCVerificationRejected` is raised only after phase 3 has committed. `ATOMIC_REQUESTS` must remain False. A first-submission provider error writes no `Vehicle` row. The DL module, which calls its provider inside `@transaction.atomic`, is not changed.
+**Decision.** `register_vehicle_with_rc` runs: (1) guard in a short `transaction.atomic` taking `select_for_update` on `UserProfile` then `Vehicle`; (2) the adapter call with no transaction open; (3) decision and persistence in a second short `atomic` that re-locks and re-validates. Lock order is always profile then vehicle, including webhook and admin paths. `RCVerificationRejected` is raised only after phase 3 has committed. `ATOMIC_REQUESTS` must remain False. A first-submission provider error writes no `Vehicle` row. (Superseded for DL by Decision 29: `submit_dl_verification` now uses the same three phases, with lock order profile then `DriverVerification`.)
 
 **Rationale.** NFR-REL-03 forbids holding a write transaction across the provider call. The cost is one extra lock/validate cycle and, on a concurrent double-submit, one wasted provider call followed by a `409`. Raising a domain error inside `atomic` would roll back the persisted rejection and attempt count, hence raise-after-commit. A Redis per-user lock to prevent the duplicate call was considered and not adopted (extra dependency in the request path; not needed with the mock).
 
@@ -324,7 +336,7 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 **Decision.** `classify_owner_match` (match/partial/mismatch/not_checked), `check_vehicle_class` and `decide_rc_outcome` are pure functions in `services/rc_matching.py`. Name match requires every profile token to match, at most one by initial, and at least one full-token match; masked owners (`*` or `XXX`) are `not_checked`; relation tails (S/O etc.) and honorifics are stripped; non-Latin profile names always go to review. Only `match` auto-verifies; any other classification on a provider-`verified` result sends the vehicle to review, never to rejection. A class conflict rejects even when the name does not match. `rc_owner_name` is stored only when the vehicle goes to name review; provider strings are clipped to column widths; the raw payload is never stored; any rejection reason is sanitised and has the owner name redacted. Duplicate registrations are allowed (no unique constraint, non-unique index, flag-on WARNING log, admin indicator).
 
-**Rationale.** FR-38/39/47 and the constraint that RC business rules are identical across providers. Requiring one full-token match prevents "P SHARMA" style initial-only matches from auto-verifying. Storing the owner name only for review cases is the minimum the reviewer needs and reduces the DPDP surface while OQ-R7 (retention) is open; `_clear_owner_data` is the single hook for a purge policy.
+**Rationale.** FR-38/39/47 and the constraint that RC business rules are identical across providers. Requiring one full-token match prevents "P SHARMA" style initial-only matches from auto-verifying. Storing the owner name only for review cases is the minimum the reviewer needs and reduces the DPDP surface while OQ-R7 (retention) is open; `_clear_owner_data` is the single hook for a purge policy (since v6, Decision 29, it is called on every terminal transition, including staff approve and reject).
 
 ### Decision 18 — `vehicle_type` to RC vehicle class mapping
 
@@ -336,7 +348,7 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 **Decision.** `NEXT_STEP_BY_STATUS` and `compute_next_step(profile)` in `services/onboarding.py` replace the three duplicated view maps and the hard-coded literals (values for all existing statuses are identical). `ConditionalOnboardingGate` raises `OnboardingIncomplete(extra={'onboarding_status', 'next_step'})` instead of returning `False`.
 
-**Rationale.** Adding `pending_rc_verification` would otherwise touch every copy. The gate currently yields a generic `permission_denied` without `next_step`, so FR-14 and AC-41 are not met today; the fix reuses the Decision 16 mechanism, is dormant while `ONBOARDING_GATE_ENABLED` is False, and does not touch the vehicle endpoints (they override `permission_classes`). The gate already lazy-imports `profiles`; moving it into `profiles.permissions` is the cleaner long-term home and is left for a later change.
+**Rationale.** Adding `pending_rc_verification` would otherwise touch every copy. The gate currently yields a generic `permission_denied` without `next_step`, so FR-14 and AC-41 are not met today; the fix reuses the Decision 16 mechanism, is dormant while `ONBOARDING_GATE_ENABLED` is False, and does not touch the vehicle endpoints (they override `permission_classes`). The gate already lazy-imports `profiles`; moving it into `profiles.permissions` is the cleaner long-term home and is left for a later change. (v7: implemented as described; `ConditionalOnboardingGate` raises `OnboardingIncomplete` with `onboarding_status` and `next_step` and still lives in `core.permissions`. The words "currently yields a generic `permission_denied`" describe the code at v3 design time.)
 
 ### Decision 20 — `switch_role` derivation and grandfathered drivers (resolves OQ-R12b)
 
@@ -346,11 +358,11 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 ### Decision 27 — Explicit `vehicle_step_exempt` marker for grandfathered drivers (supersedes the no-new-column rule in Decision 20)
 
-**Decision.** Add `UserProfile.vehicle_step_exempt` (`BooleanField`, `default=False`, `db_default=False`) in migration `0004_userprofile_vehicle_step_exempt`. `derive_driver_status` with no vehicle row returns `complete` if the marker is set, else `awaiting_vehicle` (`next_step = vehicle_registration`); rows that exist keep the Decision 20 derivation. The marker is set only by a data step (`RunPython`) in `0004`, which marks profiles that are `complete`, have a `DriverVerification` row, and have no `is_active` `Vehicle` row. The step is idempotent; nothing else ever sets the marker (not application code, not admin, where it is read-only). Reverse: the data step clears the marker, then the column is dropped.
+**Decision.** Add `UserProfile.vehicle_step_exempt` (`BooleanField`, `default=False`, `db_default=False`) in migration `0004_userprofile_vehicle_step_exempt`. `derive_driver_status` with no vehicle row returns `complete` if the marker is set, else `awaiting_vehicle` (`next_step = vehicle_registration`); rows that exist keep the Decision 20 derivation. The marker is set only by a data step (`RunPython`) in `0004`, which marks profiles that are `complete`, have a `DriverVerification` row with `dl_verification_status = 'verified'` (v6, Decision 29; originally any row), and have no `is_active` `Vehicle` row. The step is idempotent; nothing else ever sets the marker (not application code, not admin, where it is read-only). Reverse: the data step clears the marker, then the column is dropped.
 
 **Rationale.** The Decision 20 rule (no row + currently `COMPLETE` => grandfathered) is bypassable through FR-52: a driver in `awaiting_vehicle` who never submitted a vehicle can switch to passenger (which sets `complete`) and back to driver, and would then be treated as grandfathered and become `COMPLETE` without a vehicle. A stored marker cannot be reached by that path. This reverses the earlier rejection of a marker (the "current status is `COMPLETE`" condition is not an invariant). It also removes the "staff deleted a vehicle row" edge that Decision 20 accepted.
 
-**Accepted edge cases of the marking rule.** (1) A profile whose only vehicle is inactive (`is_active = False`) has no active row and is marked, so it is treated as grandfathered. (2) A `complete` profile with a pending or rejected `DriverVerification` record is marked; this is harmless because switching to driver still requires a verified DL, so the marker has no effect until a DL is verified. Passengers who never began the driver path have no `DriverVerification` row and are not marked.
+**Accepted edge cases of the marking rule.** (1) A profile whose only vehicle is inactive (`is_active = False`) has no active row and is marked, so it is treated as grandfathered. (2) Superseded in v6 (Decision 29, SEC-002 F-10): a `complete` profile with a pending or rejected `DriverVerification` record was originally marked, and a passenger whose pending DL was later verified could then become a driver without a vehicle. The rule now requires a verified DL, so profiles with no DL row, or a pending or rejected one, are not marked. Passengers who never began the driver path are not marked.
 
 ### Decision 21 — RC webhook with the flag OFF returns `404`; verification and parsing order (resolves OQ-R12c)
 
@@ -368,15 +380,15 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 ### Decision 23 — Admin review queue (OQ-R13 remains an operations item)
 
-**Decision.** `VehicleAdmin`: list of registration number, user, type, `rc_verification_status`, `rc_name_match`, `rc_attempt_count`, `rc_submitted_at` and an annotated other-drivers-with-same-registration count; filters on status, name match, needs-review, duplicates; search by registration number and phone; owner name only on the read-only detail view and never in list/filter/search; actions Approve, Reject (reason from an `ActionForm` field) and Reset attempts, guarded by a new `profiles.review_rc` permission, implemented by service functions, audited through `ModelAdmin.log_change` (Django `LogEntry`); add and delete disabled. Approve is allowed for `pending` and also for `rejected` (FR-40 manual recovery after the limit); reject only for `pending`. Admin actions work regardless of the flag.
+**Decision.** `VehicleAdmin`: list of registration number, user, type, `rc_verification_status`, `rc_name_match`, `rc_attempt_count`, `rc_submitted_at` and an annotated other-drivers-with-same-registration count; filters on status, name match, needs-review, duplicates; search by registration number and phone; owner name only on the read-only detail view (since v6 only for holders of `profiles.review_rc`, Decision 29) and never in list/filter/search; actions Approve, Reject (reason from an `ActionForm` field) and Reset attempts, guarded by a new `profiles.review_rc` permission, implemented by service functions, audited through `ModelAdmin.log_change` (Django `LogEntry`); add and delete disabled. Approve is allowed for `pending` and also for `rejected` (FR-40 manual recovery after the limit); reject only for `pending`. Admin actions work regardless of the flag.
 
-**Rationale.** Reuses Django admin and its audit log (no new table). A dedicated permission lets operations be a reviewer group instead of all staff. Owner/SLA/queue monitoring are operations decisions (OQ-R13) and are not designed here. Recommended follow-up: make `UserProfile.onboarding_status` read-only for non-superusers.
+**Rationale.** Reuses Django admin and its audit log (no new table). A dedicated permission lets operations be a reviewer group instead of all staff. Owner/SLA/queue monitoring are operations decisions (OQ-R13) and are not designed here. Follow-up done in v6 (Decision 29): `UserProfile.onboarding_status` and `active_role` are read-only for non-superusers.
 
 ### Decision 24 — Settings and environment variables
 
 **Decision.** `RC_VERIFICATION_ENABLED` (False), `RC_ADAPTER_CLASS` (mock path), `RC_ADAPTER_MOCK_RESULT` (`sync_verified`), `RC_PROVIDER_TIMEOUT_SECONDS` (5), `RC_MAX_ATTEMPTS` (3), `RC_WEBHOOK_SECRET` (empty = fail closed), loaded with `python-decouple`; validated only when the flag is ON; no RC variable is required for `manage.py check` or for the flag-off launch. Placeholders go in `backend/.env.example` (existence unverified by this review; append or create).
 
-**Rationale.** Flag-off startup must never depend on RC configuration (AC-51).
+**Rationale.** Flag-off startup must never depend on RC configuration (AC-51). The DL settings added in v6 (`DL_ADAPTER_CLASS`, `DL_ADAPTER_MOCK_RESULT`, `DL_MAX_ATTEMPTS`, `DL_WEBHOOK_SECRET`) are validated unconditionally because DL has no flag; they have safe defaults except that the default adapter is the mock, which is refused when `DEBUG` is off (Decision 29).
 
 ### Decision 25 — Logging allow-list; no PII
 
@@ -386,11 +398,11 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 
 ### Decision 26 — What this change deliberately does NOT fix
 
-**Not fixed (tracked separately):** the DL module's module-global adapter imported by views, the provider call inside `@transaction.atomic`, the missing `DL_*` settings and hardcoded attempt limit `3`, the missing DL `_sanitise_rejection_reason`, the DL mock's `==` comparison and default secret, the DL webhook's silent idempotency, `DLSubmitView` returning `202` for a synchronous DL rejection, and the absent/unverified `backend/.env.example`.
+**Not fixed in v3 (tracked separately; the DL items were fixed in v6, see Decision 29):** the DL module's module-global adapter imported by views, the provider call inside `@transaction.atomic`, the missing `DL_*` settings and hardcoded attempt limit `3`, the missing DL reason sanitiser, the DL mock's `==` comparison and default secret, and the DL webhook's silent idempotency. **Still not fixed after v6:** `DLSubmitView` returning `202` for a synchronous DL rejection (KNOWN GAP KG-02 in ARCH-002 v7, open item U10), and the absent/unverified `backend/.env.example` (v7: `git ls-files` lists no `.env.example` under `backend/`).
 
-**Pre-existing flag-off vehicle-endpoint discrepancies, preserved so flag-off behaviour does not change:** serializer errors surface as `400 invalid_request` instead of `invalid_registration_format` / `invalid_vehicle_type`; a Passenger gets `403 permission_denied` from `IsDriverRole` instead of `not_a_driver`; a `COMPLETE` Driver posting a vehicle gets `403 dl_not_verified` instead of `409 vehicle_already_registered` (flag ON follows the specified `409`); `vehicle_type` is returned upper-case. These make AC-28 and AC-29 fail as written today. A "contract conformance" change would fix them but alters flag-off error bodies, so it needs explicit approval. New RC code is specified-conformant where it is new (`RequireDriverRole` on the status view, `onboarding_incomplete` from the gate).
+**Pre-existing flag-off vehicle-endpoint discrepancies: RESOLVED in code (history kept; re-verified 2026-10-17 at `803e319`).** At the time of this decision they were preserved so flag-off behaviour did not change: serializer errors surfaced as `400 invalid_request` instead of `invalid_registration_format` / `invalid_vehicle_type`; a Passenger got `403 permission_denied` from `IsDriverRole` instead of `not_a_driver`; a `COMPLETE` Driver posting a vehicle got `403 dl_not_verified` instead of `409 vehicle_already_registered` (flag ON followed the specified `409`); `vehicle_type` was returned upper-case. These made AC-28 and AC-29 fail as written, and a "contract conformance" change was held back because it alters flag-off error bodies. That change has since been made (requirements FR-51 / AC-53): `VehicleRegisterView` now has `permission_classes = [IsAuthenticated, RequireDriverRole]` (`403 not_a_driver`), maps serializer errors to `400 invalid_registration_format` / `400 invalid_vehicle_type`, and answers `409 vehicle_already_registered` for a `COMPLETE` driver. The upper-case `vehicle_type` was adopted as the contract (requirements FR-53). New RC code was specified-conformant where it was new (`RequireDriverRole` on the status view, `onboarding_incomplete` from the gate). The equivalent defect still exists on the DL endpoints (KNOWN GAP KG-03, open item U10).
 
-**Rationale.** The user's instruction is that flag-off must behave exactly as today and that DL gaps are out of scope; mixing fixes into this change would widen the blast radius of the launch path.
+**Rationale.** The user's instruction is that flag-off must behave exactly as today and that DL gaps are out of scope; mixing fixes into this change would widen the blast radius of the launch path. (The DL fixes were made afterwards as their own change, Decision 29.)
 
 ### Decision 28 — Switching to driver without a verified DL starts driver setup; one `switch_role` for both flag modes (v5, 2026-10-17)
 
@@ -418,6 +430,40 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 - A user who exhausted the DL attempt limit can still toggle roles, lands in `awaiting_dl` and cannot submit (`max_dl_attempts_exceeded`); they can switch back to passenger, and staff action is needed for more attempts.
 - Contract: `dl_required` disappears from this endpoint; clients should route on `next_step`. No schema change, no migration; rollback is a code revert.
 
+### Decision 29 — DL security hardening: per-call adapter, unconditional production guard, HMAC webhook, three-phase submit (v6, 2026-10-17)
+
+**Context.** The FEAT-002 security review (SEC-002, `docs/reviews/FEAT-002-security-review.md`) found that the DL path, unlike the RC path, was unguarded. Findings addressed by this decision (commit `803e319` on `onboarding-BE`): F-01 (the DL adapter was a hard-wired mock that verified every well-formed number, with no production guard), F-02 (the DL webhook was authenticated by a public hard-coded secret and failed open on an empty secret), F-03 (webhook validation was bound to the original adapter instance, so a replacement installed through `set_adapter()` left the webhook guarded by the mock), F-04 (DL submit had no row lock, so parallel requests defeated the attempt cap, and it called the provider inside a transaction), F-07 (the third-party RC owner name was kept after staff resolution and visible to any admin with view permission), F-09 (an unknown webhook reference was an unhandled `500`, errors were mapped by substring, the raw rejection reason was stored), F-10 (migration `0004` marked any profile with any DL row as vehicle-exempt) and F-11 (admin forms could edit state fields). Decision 26 had deliberately deferred the DL items to keep the RC change small; this decision reverses that for the DL module.
+
+**Decisions.**
+1. **Adapter built per call from settings.** `profiles.adapters.get_dl_adapter()` does `import_string(settings.DL_ADAPTER_CLASS)` and returns `cls.from_settings(settings)`; `DLVerificationAdapter.from_settings()` (in `base.py`) is a concrete classmethod returning `cls()`. The module-level `_adapter` and `set_adapter` in `dl_verification.py` are removed. The submit service and `DLWebhookView` obtain the adapter through the factory on every request, so the adapter that validates a webhook is always the adapter in settings. Tests use `override_settings` or patch `get_dl_adapter`.
+2. **New settings** in `config/settings.py`: `DL_ADAPTER_CLASS` (default: the mock), `DL_ADAPTER_MOCK_RESULT` (default `sync_verified`), `DL_MAX_ATTEMPTS` (default 3), `DL_WEBHOOK_SECRET` (default empty), and the derived `DL_MOCK_ADAPTER_FORBIDDEN = not DEBUG`, computed at import from the environment `DEBUG` (so the test runner forcing `DEBUG=False` cannot trip it).
+3. **Production guard, not conditional on any flag.** At import, `config/settings.py` raises `ImproperlyConfigured` if `DEBUG` is off and `'mock'` is in `DL_ADAPTER_CLASS`, or if `DL_MAX_ATTEMPTS < 1`. A second layer in `get_dl_adapter()` refuses any `MockDLVerificationAdapter` subclass when `DL_MOCK_ADAPTER_FORBIDDEN`. The mock raises `ImproperlyConfigured` on an unknown `DL_ADAPTER_MOCK_RESULT` instead of silently verifying.
+4. **Webhook.** Hex HMAC-SHA256 of the raw request body, keyed with `DL_WEBHOOK_SECRET`, in `X-DL-Signature` (optional `sha256=` prefix), compared with `hmac.compare_digest`; it fails closed on an empty secret or a missing header. It is checked before the payload is parsed and before any database access (`403 invalid_webhook_signature`). An unknown `reference_id` returns `404 dl_reference_not_found` (new `DLReferenceNotFound`). The webhook `rejection_reason` is stored through `sanitise_reason`. A duplicate delivery for a reference already `verified` or `rejected` returns `200` and changes nothing (idempotent; no longer `409`). Lock order is `UserProfile` then `DriverVerification`.
+5. **Submit follows the RC three-phase pattern.** Phase 1 guards under `select_for_update` (profile, then `DriverVerification`); phase 2 calls the provider with no transaction open; phase 3 re-locks, re-checks and persists (attempts counted under the lock against `DL_MAX_ATTEMPTS`). A provider exception, an invalid provider result, an unimportable adapter class, a refused mock or a bad mock mode becomes `422 dl_verification_provider_error` with nothing written and no attempt consumed. A `TimeoutError` becomes `pending` and does consume an attempt. Logging uses an allow-listed helper with `onboarding.dl.*` event names; the DL number, reasons and adapter messages are never logged.
+6. **RC owner name.** `resolve_rc_review` calls `_clear_owner_data` on approve and on reject (the sync and webhook terminal paths already did), so only a vehicle still pending review holds `rc_owner_name`. In admin the field is shown only to users holding `profiles.review_rc`.
+7. **Migration `0004`** was edited in place (it is unmerged): the data step marks only profiles that are `complete`, have a `DriverVerification` with `dl_verification_status = 'verified'`, and have no active vehicle.
+8. **Admin.** `onboarding_status` and `active_role` are read-only for non-superusers; `vehicle_step_exempt` is read-only for all; `DriverVerificationAdmin` excludes `dl_number`, makes its state fields read-only for non-superusers, and disables add.
+
+**Alternatives considered.**
+- *Keep the module-global adapter and fix it with a `set_adapter()` test hook.* Rejected: this shape caused F-03, it cannot be audited from settings, and per-process mutable state is wrong with several workers. The RC per-call factory is as cheap.
+- *A DEBUG-independent override (for example `DL_ALLOW_MOCK_ADAPTER`) so staging can run the mock with `DEBUG=False`.* Rejected for now: one environment variable would re-enable "verifies every DL" in production. If staging needs `DEBUG=False`, it should use a real or purpose-built non-mock adapter (same stance as U4 for RC).
+- *Make the guard conditional on a flag, as RC is.* Rejected: DL verification is always in the driver path and has no flag.
+- *A Django system check.* Rejected as the only guard: checks do not run under WSGI startup (same reason as Decision 13).
+- *Keep a static header secret and only use a constant-time comparison.* Rejected: it is replayable and does not bind the body; HMAC over the body is what a real provider does and the mock should exercise it.
+- *Keep `409 already_processed` for duplicate DL webhooks.* Not kept: providers retry on non-2xx and `409` reveals that a reference is in a terminal state. Accepted resolution (v7): `200`; the requirements, which name `409` in NFR-REL-02, are being aligned to the code for the DL webhook (U8).
+- *Hold the transaction across the provider call.* Rejected for the reasons in Decision 14.
+- *A corrective migration after `0004`.* Rejected: `0004` was unmerged, so editing it is simpler. Databases that already applied the old version need a one-off fix (ARCH-002 "v6 rollout").
+
+**Consequences.**
+- **Non-`DEBUG` deployments are blocked until a real DL adapter exists.** With the default `DL_ADAPTER_CLASS` the process refuses to start when `DEBUG` is off. `DigiLockerDLVerificationAdapter` is still only a design target (U9). This is intended.
+- **`DL_WEBHOOK_SECRET` must be set** (and shared with the provider) for the DL webhook to accept anything; empty means every webhook is `403`. The old static `X-Mock-Signature` header no longer works.
+- Contract changes visible to clients and tests: DL webhook duplicate is `200` (was `409`), unknown reference is `404` (was `500`), submit can return `422 dl_verification_provider_error`, the attempt cap is `DL_MAX_ATTEMPTS`.
+- Requirements conflict recorded, not edited here: NFR-REL-02 and the duplicate-delivery paragraph name `409 already_processed` for webhooks; the DL webhook now returns `200` (U8). v7: `200` is the accepted resolution and the requirements are being aligned to the code for the DL webhook (the RC webhook keeps `409`).
+- A timed-out DL submission has no reference and cannot be resolved by webhook; the DL path has no handler for a provider that reuses a reference (unique-constraint `IntegrityError` becomes a `500`, unlike RC). Neither is reachable with the mock; fix before enabling a real provider.
+- `DL_PROVIDER_TIMEOUT_SECONDS`, documented in earlier revisions, was never implemented; a real adapter owns its timeout (U9).
+- Databases that applied the old `0004` keep the broader marking until re-migrated; ARCH-002 "v6 rollout" gives the steps. No schema change; rollback is a code revert.
+- Still open from SEC-002 (not addressed): F-05 throttling, F-06 flag-transition semantics, F-08 identity binding (U5-U7).
+
 ---
 
 ## Resolved open questions (requirements v4)
@@ -428,7 +474,7 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 | OQ-R12 (a) | `422 rc_verification_rejected` retained; DEC-011 error object extended with optional `extra` (Decision 16). |
 | OQ-R12 (b) | A grandfathered driver (explicit `vehicle_step_exempt` marker, Decision 27) with no vehicle row stays `COMPLETE` on a role round trip; any other driver with no row becomes `awaiting_vehicle`. FR-43/AC-48 amended in requirements v6. |
 | OQ-R12 (c) | RC webhook with the flag OFF returns `404`, no state change (Decision 21). |
-| OQ-R7 | Still open (legal): retention of `rc_owner_name`; hook `_clear_owner_data`. Must be answered before production enablement. |
+| OQ-R7 | Narrowed in v6 (Decision 29): `rc_owner_name` is cleared on every terminal transition and shown in admin only to `profiles.review_rc` holders. Still open (legal): how long a name may be held while a vehicle is pending review, and backups. Must be answered before production enablement. |
 | OQ-R13 | Still open (operations): review queue owner and SLA; admin tooling provided (Decision 23). |
 
 ## New open technical items
@@ -436,6 +482,14 @@ Context: FEAT-002 requirements v4 adds optional, feature-flagged RC verification
 | ID | Item | Owner |
 |----|------|-------|
 | U1 | Closed: FR-43/AC-48 amended in requirements v6 for the grandfathered "no vehicle row" case (marker, Decision 27). | product-manager |
-| U2 | Approve or decline the flag-off contract-conformance fixes (Decision 26). | product-manager |
+| U2 | Closed (v7): the flag-off vehicle error codes now conform in code and the upper-case `vehicle_type` is the contract (Decision 26, requirements FR-51 / FR-53). The DL-endpoint equivalent is KG-03 (U10). | product-manager |
 | U3 | Closed (v5, Decision 28): every non-initial status can switch back to passenger in both flag modes. | product-manager |
-| U4 | Exercising the mock in a `DEBUG=False` staging environment is refused by the guard; an explicit override would need security approval. | security-reviewer / product-manager |
+| U4 | Exercising the mock in a `DEBUG=False` staging environment is refused by the guard (RC when the flag is ON; DL unconditionally since v6, Decision 29); an explicit override would need security approval. | security-reviewer / product-manager |
+| U5 | SEC-002 F-05: DRF throttling for onboarding endpoints and webhooks, per-user in-flight guard for provider calls. Still open. | security-reviewer / backend-engineer |
+| U6 | SEC-002 F-06: flag-transition semantics (legacy `NULL` vehicles when RC is enabled; whether the flag-off role switch consults the RC state of an existing vehicle). Still open. | product-manager |
+| U7 | SEC-002 F-08: bind DL and RC verification to the person (name/DOB match, DL uniqueness across accounts, duplicate plates). Still open; depends on provider facts. | product-manager / security-reviewer |
+| U8 | Duplicate DL webhook delivery returns `200` (Decision 29). **Accepted resolution (v7): `200`.** Requirements NFR-REL-02 and the duplicate-delivery paragraph (which name `409 already_processed`) are being aligned to the code for the DL webhook; the RC webhook keeps `409`. Kept open only as a tracking item until the requirements edit lands; no code change is needed. | product-manager |
+| U9 | No real DL adapter exists (`DigiLockerDLVerificationAdapter` is planned); non-`DEBUG` deployments are blocked until it does. Decide where the provider timeout setting lives (`DL_PROVIDER_TIMEOUT_SECONDS` was documented but never implemented). | architect / backend-engineer |
+| U10 | (v7) DL contract conformance, see ARCH-002 "Known Gaps (v7)": KG-01 (`400 invalid_request` instead of `invalid_dl_format`), KG-02 (`202` for a synchronous rejection, no `rejection_reason` in the submit body), KG-03 (`403 permission_denied` instead of `not_a_driver` on the DL endpoints; fix is `RequireDriverRole`), KG-06 (separators accepted anywhere). Decide per item: change the code or amend the contract. Open. | product-manager / backend-engineer |
+| U11 | (v7) KG-04 / SEC-002 F-15: validate `DL_ENCRYPTION_KEY` at startup (it is read lazily, so a missing key is a request-time `500`); decide on key rotation (`MultiFernet`, key version). Open. | backend-engineer / security-reviewer |
+| U12 | (v7) KG-05: register the `profiles` logger with the redacting handler, and either emit the six PLANNED events (`onboarding.profile.created`, `role.set`, `profile.submitted`, `vehicle.registered`, `vehicle.duplicate_attempt`, `role.switch`) or drop them from ARCH-002. Open. | backend-engineer |

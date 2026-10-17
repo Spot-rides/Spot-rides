@@ -33,13 +33,16 @@ info:
 
     ### Role switching (post-onboarding)
 
-    Users can switch between driver and passenger roles at any time:
+    Users who have finished the profile step (`onboarding_status` is not `not_started` or `role_selected`)
+    can switch roles:
     - `PATCH /api/profile/role/` — switch active role
-    - Switching to passenger: always immediate
-    - Switching to driver: requires verified DL
-    - With the RC flag on, a driver whose vehicle is `pending_rc_verification` or still `awaiting_vehicle`
-      may also switch to passenger (which completes onboarding), and switching back to driver restores the
-      status derived from the vehicle (`complete`, `pending_rc_verification` or `awaiting_vehicle`)
+    - Switching to passenger: always immediate, from every eligible status; the result is `complete`
+      (the driver's DL and vehicle records are kept)
+    - Switching to driver: with a verified DL the status is derived from the vehicle (`complete` or
+      `awaiting_vehicle`, or with the RC flag on also `pending_rc_verification`); with a pending DL it is
+      `pending_verification`; with no DL, or a rejected one, driver setup starts (`awaiting_dl`,
+      `next_step = dl_submission`). Behaviour is the same with the RC flag on or off, except that
+      `pending_rc_verification` is only derived while the flag is on. See the endpoint description.
 
     ### Onboarding gate
 
@@ -383,7 +386,10 @@ components:
           description: |
             Indian driving licence number. Format: XX00 0000 0000000
             (2 state letters, 2-digit RTO code, 4-digit year, 7-digit serial).
-            Spaces/hyphens optional; normalized to uppercase internally.
+            Spaces and hyphens are optional and ignored: the server uppercases the input, removes every
+            space and hyphen, then requires `^[A-Z]{2}[0-9]{13}$`. `maxLength` applies to the raw input.
+            The `pattern` above is the documented input form (FR-07); the server is more permissive about
+            where separators appear (ARCH-002 v7 KNOWN GAP KG-06).
           example: "MH01 20110012345"
 
     DLSubmissionResponse:
@@ -393,6 +399,10 @@ components:
         dl_verification_status:
           type: string
           enum: [verified, pending]
+          description: |
+            Intended contract: `verified` or `pending`. KNOWN GAP KG-02: a synchronous provider rejection
+            currently returns `rejected` here (HTTP 202) with `onboarding_status` `awaiting_dl` or
+            `pending_verification` and the matching `next_step` (`dl_submission` / `awaiting_verification`).
           example: verified
         onboarding_status:
           type: string
@@ -930,16 +940,26 @@ paths:
       summary: Submit driving licence for verification
       description: |
         Submit an Indian driving licence number for verification.
-        Only accessible to users with active_role = driver.
+        Only accessible to users with active_role = driver whose `onboarding_status` is `awaiting_dl` or
+        `pending_verification` (resubmission after a rejection or a timeout); in any other status the
+        response is `400 invalid_onboarding_state`.
 
         **DL format**: XX00 0000 0000000 (2-letter state code, 13 digits)
         Spaces/hyphens are optional and normalized server-side.
 
         **Verification modes**:
-        - **Sync verified** (200): DL verified immediately, onboarding complete
+        - **Sync verified** (200): DL verified immediately; the driver moves on to vehicle registration
+          (`onboarding_status = awaiting_vehicle`, `next_step = vehicle_registration`)
         - **Async pending** (202): Verification in progress, poll /api/onboarding/driver/dl/status/
 
-        **Attempt limit**: 3 submissions before manual review required.
+        **Attempt limit**: `DL_MAX_ATTEMPTS` submissions (default 3) before manual review is required.
+
+        **Known gaps (the implementation deviates from this contract; see ARCH-002 v7 "Known Gaps")**:
+        - KG-01: a malformed DL currently returns `400 invalid_request` (with `error.fields.dl_number`),
+          not `400 invalid_dl_format`.
+        - KG-02: a synchronous provider rejection currently returns `202` with
+          `dl_verification_status = rejected` (status unchanged, no `rejection_reason` in the body).
+        - KG-03: a passenger currently receives the generic `403 permission_denied`, not `not_a_driver`.
       operationId: dl_submit
       tags: [Driver Verification]
       security:
@@ -976,7 +996,10 @@ paths:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '202':
-          description: DL verification pending (async)
+          description: |
+            DL verification pending (async). KNOWN GAP KG-02: the implementation also returns `202`, with
+            `dl_verification_status = rejected`, for a synchronous provider rejection (the onboarding status
+            is unchanged and the body has no `rejection_reason`; read it from the DL status endpoint).
           content:
             application/json:
               schema:
@@ -998,7 +1021,13 @@ paths:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '400':
-          description: Invalid DL format
+          description: |
+            Invalid DL format (`invalid_dl_format`), or `invalid_onboarding_state` when the driver is not in
+            `awaiting_dl` / `pending_verification`.
+            KNOWN GAP KG-01: for a malformed DL the implementation currently returns `error.code =
+            invalid_request` with the message in `error.detail` and in `error.fields.dl_number` (a generic
+            validation error), not `invalid_dl_format`. Clients should key on the `400` and on
+            `error.fields.dl_number` until this is resolved.
           content:
             application/json:
               schema:
@@ -1018,7 +1047,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Not a driver
+          description: |
+            Not a driver. KNOWN GAP KG-03: for a passenger the implementation currently returns the generic
+            `permission_denied` code, not `not_a_driver`.
           content:
             application/json:
               schema:
@@ -1127,7 +1158,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Not a driver
+          description: |
+            Not a driver. KNOWN GAP KG-03: for a passenger the implementation currently returns the generic
+            `permission_denied` code; `not_a_driver` is returned to a driver who has not submitted a DL yet.
           content:
             application/json:
               schema:
@@ -1190,7 +1223,7 @@ paths:
                   request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
                   timestamp: "2026-09-23T10:00:00Z"
         '400':
-          description: Malformed payload (only reachable with a valid signature)
+          description: Malformed payload (only reachable with a valid signature). `error.code` is `invalid_request` with `error.fields` naming the problem, for example a missing `reference_id` or a `status` other than `verified` / `rejected`; nothing is changed.
           content:
             application/json:
               schema:
