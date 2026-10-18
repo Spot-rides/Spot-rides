@@ -1,0 +1,114 @@
+name: Backend Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-tests.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-tests.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: spotrides_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+        cache-dependency-path: 'backend/requirements.txt'
+
+    - name: Install dependencies
+      working-directory: ./backend
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Django checks
+      working-directory: ./backend
+      env:
+        DJANGO_SETTINGS_MODULE: config.settings.development
+        DB_NAME: spotrides_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        DB_HOST: localhost
+        DB_PORT: 5432
+        REDIS_URL: redis://localhost:6379/0
+        SECRET_KEY: test-secret-key-for-ci
+        JWT_SIGNING_KEY: test-jwt-signing-key-for-ci-only
+        OTP_PEPPER: test-otp-pepper-for-ci-only
+        DEBUG: 'True'
+      run: |
+        python manage.py check
+
+    - name: Run migrations
+      working-directory: ./backend
+      env:
+        DJANGO_SETTINGS_MODULE: config.settings.development
+        DB_NAME: spotrides_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        DB_HOST: localhost
+        DB_PORT: 5432
+        REDIS_URL: redis://localhost:6379/0
+        SECRET_KEY: test-secret-key-for-ci
+        JWT_SIGNING_KEY: test-jwt-signing-key-for-ci-only
+        OTP_PEPPER: test-otp-pepper-for-ci-only
+        DEBUG: 'True'
+      run: |
+        python manage.py migrate --no-input
+
+    - name: Run tests
+      working-directory: ./backend
+      env:
+        DJANGO_SETTINGS_MODULE: config.settings.development
+        DB_NAME: spotrides_test
+        DB_USER: postgres
+        DB_PASSWORD: postgres
+        DB_HOST: localhost
+        DB_PORT: 5432
+        REDIS_URL: redis://localhost:6379/0
+        SECRET_KEY: test-secret-key-for-ci
+        JWT_SIGNING_KEY: test-jwt-signing-key-for-ci-only
+        OTP_PEPPER: test-otp-pepper-for-ci-only
+        DEBUG: 'True'
+      run: |
+        python manage.py test --verbosity=2
+
+    - name: Test Summary
+      if: always()
+      run: echo "Backend tests completed"
