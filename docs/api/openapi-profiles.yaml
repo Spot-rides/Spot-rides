@@ -1,0 +1,2037 @@
+openapi: 3.0.3
+info:
+  title: Spot Rides — Onboarding API (profiles)
+  description: |
+    User onboarding flow endpoints for the Spot Rides platform.
+
+    ## Onboarding flow
+
+    After completing OTP authentication (FEAT-001), new users must complete onboarding:
+
+    1. `GET /api/onboarding/status/` — check current onboarding state and next required step
+    2. `POST /api/onboarding/role/` — select active role: `driver` or `passenger`
+    3. `POST /api/onboarding/profile/` — submit personal details (first name, last name, age, gender)
+    4. **For drivers only**: `POST /api/onboarding/driver/dl/` — submit Indian driving licence number for verification
+    5. **For drivers in pending state**: `GET /api/onboarding/driver/dl/status/` — poll for DL verification result
+    6. **For drivers after DL verified**: `POST /api/onboarding/driver/vehicle/` — register vehicle (registration number + type)
+    7. **For drivers with vehicle RC verification enabled** (`RC_VERIFICATION_ENABLED`, default: false):
+       - the vehicle submission may return `202` with `onboarding_status = pending_rc_verification` and
+         `next_step = awaiting_rc_verification`; poll `GET /api/onboarding/driver/vehicle/status/`
+         until the vehicle is verified (`complete`) or rejected (`awaiting_vehicle`, resubmit)
+       - an asynchronous provider result arrives at `POST /api/onboarding/driver/vehicle/rc/webhook/`
+         (signature-authenticated, not JWT)
+
+    ### Vehicle RC verification feature flag
+
+    `RC_VERIFICATION_ENABLED` defaults to `false`. Only a mock adapter exists; no real provider is integrated.
+    - **Flag off**: `POST /api/onboarding/driver/vehicle/` registers the self-declared vehicle and returns
+      `200` / `complete`. The additive fields `rc_verification_status`, `rejection_reason` and
+      `reference_id` are `null`. The RC webhook returns `404`, and the status endpoint returns `null` RC fields.
+    - **Flag on**: the submission is verified; outcomes are `200` complete, `202` pending, or an error
+      (`422 rc_verification_rejected`, `422 rc_verification_provider_error`, `429 max_rc_attempts_exceeded`,
+      `409 rc_verification_pending`, `409 rc_already_verified`). Those flag-on codes are marked in the endpoint docs.
+
+    ### Role switching (post-onboarding)
+
+    Users who have finished the profile step (`onboarding_status` is not `not_started` or `role_selected`)
+    can switch roles:
+    - `PATCH /api/profile/role/` — switch active role
+    - Switching to passenger: always immediate, from every eligible status; the result is `complete`
+      (the driver's DL and vehicle records are kept)
+    - Switching to driver: with a verified DL the status is derived from the vehicle (`complete` or
+      `awaiting_vehicle`, or with the RC flag on also `pending_rc_verification`); with a pending DL it is
+      `pending_verification`; with no DL, or a rejected one, driver setup starts (`awaiting_dl`,
+      `next_step = dl_submission`). Behaviour is the same with the RC flag on or off, except that
+      `pending_rc_verification` is only derived while the flag is on. See the endpoint description.
+
+    ### Onboarding gate
+
+    All endpoints (except auth, onboarding, and webhook endpoints) require `onboarding_status = complete`.
+    This gate is controlled by the `ONBOARDING_GATE_ENABLED` feature flag (default: false).
+    When it blocks a request the response is `403 onboarding_incomplete`, whose `error` object also carries
+    `onboarding_status` and `next_step`. A driver in `pending_rc_verification` is gated like one in
+    `pending_verification`; the vehicle status endpoint is not gated so such a driver can poll.
+
+    ## Response envelope
+
+    Every response uses the unified envelope:
+    ```json
+    {
+      "success": true,
+      "message": "Role selected successfully.",
+      "data": { },
+      "error": null,
+      "meta": { "request_id": "…", "timestamp": "…" }
+    }
+    ```
+
+  version: 2.1.0
+  contact:
+    name: Spot Rides Engineering
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+  - url: https://api.spotrides.com
+    description: Production
+
+tags:
+  - name: Onboarding
+    description: New user onboarding flow (role selection, profile, DL verification)
+  - name: Driver Verification
+    description: Driving licence and vehicle (RC) verification for drivers
+  - name: Profile
+    description: User profile management and role switching
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token from OTP authentication
+    RCWebhookSignature:
+      type: apiKey
+      in: header
+      name: X-RC-Signature
+      description: |
+        Authenticates RC verification webhook calls (no JWT). The value is the lowercase hex
+        HMAC-SHA256 of the **raw request body** keyed with the shared `RC_WEBHOOK_SECRET`,
+        optionally prefixed with `sha256=`. The signature is verified before the body is parsed
+        or the database is touched; a missing, empty or incorrect signature (or an unset
+        secret) is rejected with `403 invalid_webhook_signature`.
+    DLWebhookSignature:
+      type: apiKey
+      in: header
+      name: X-DL-Signature
+      description: |
+        Authenticates DL verification webhook calls (no JWT). The value is the lowercase hex
+        HMAC-SHA256 of the **raw request body** keyed with the shared `DL_WEBHOOK_SECRET`,
+        optionally prefixed with `sha256=`. The comparison is constant-time. The signature is
+        verified before the body is parsed or the database is touched; a missing, empty or
+        incorrect signature (or an unset secret: the endpoint fails closed) is rejected with
+        `403 invalid_webhook_signature`. The former static `X-Mock-Signature: mock-secret` header
+        is no longer accepted.
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # -- Shared response envelope ---------------------------------------------
+    ResponseMeta:
+      type: object
+      required: [request_id, timestamp]
+      properties:
+        request_id:
+          type: string
+          nullable: true
+          example: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-09-23T10:00:00Z"
+
+    SuccessEnvelope:
+      type: object
+      required: [success, message, data, error, meta]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+          nullable: true
+        data:
+          nullable: true
+        error:
+          nullable: true
+          enum: [null]
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+    ErrorEnvelope:
+      type: object
+      required: [success, message, data, error, meta]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        message:
+          type: string
+        data:
+          nullable: true
+          enum: [null]
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+        meta:
+          $ref: '#/components/schemas/ResponseMeta'
+
+    ErrorDetail:
+      type: object
+      required: [code, detail]
+      description: |
+        Error payload. `code`, `detail`, `fields` and `retry_after` are reserved keys that are
+        always present (`fields` / `retry_after` are `null` when not applicable) and can never be
+        overridden. Individual errors may carry **additional flat keys** next to them
+        (for example `onboarding_status` and `next_step` on `403 onboarding_incomplete`, and
+        `onboarding_status`, `next_step`, `rc_verification_status`, `rc_attempts_remaining` on
+        `422 rc_verification_rejected`). Clients must ignore keys they do not recognise.
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: invalid_age
+        detail:
+          type: string
+          description: Human-readable error message
+          example: Age must be between 18 and 80
+        fields:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        retry_after:
+          type: integer
+          nullable: true
+      additionalProperties: true
+
+    OnboardingGateErrorDetail:
+      description: |
+        `error` object for `403 onboarding_incomplete`. Carries the user's current state so the
+        client can route to the next onboarding screen without a second call.
+      allOf:
+        - $ref: '#/components/schemas/ErrorDetail'
+        - type: object
+          required: [onboarding_status, next_step]
+          properties:
+            onboarding_status:
+              $ref: '#/components/schemas/OnboardingStatus'
+            next_step:
+              $ref: '#/components/schemas/NextStep'
+
+    RCRejectedErrorDetail:
+      description: |
+        `error` object for `422 rc_verification_rejected` (flag on only). `detail` is a sanitised
+        rejection reason. The driver stays in `awaiting_vehicle` and may resubmit.
+      allOf:
+        - $ref: '#/components/schemas/ErrorDetail'
+        - type: object
+          required: [onboarding_status, next_step, rc_verification_status, rc_attempts_remaining]
+          properties:
+            onboarding_status:
+              $ref: '#/components/schemas/OnboardingStatus'
+            next_step:
+              $ref: '#/components/schemas/NextStep'
+            rc_verification_status:
+              type: string
+              enum: [rejected]
+              example: rejected
+            rc_attempts_remaining:
+              type: integer
+              minimum: 0
+              description: Submissions left before `429 max_rc_attempts_exceeded`
+              example: 2
+
+    # -- Shared enums ---------------------------------------------------------
+    OnboardingStatus:
+      type: string
+      description: |
+        Onboarding state (lowercase values, as returned by the API).
+        `pending_rc_verification` is only reachable while `RC_VERIFICATION_ENABLED` is on
+        (or for drivers already in that state if the flag is later turned off).
+      enum:
+        - not_started
+        - role_selected
+        - awaiting_dl
+        - pending_verification
+        - awaiting_vehicle
+        - pending_rc_verification
+        - complete
+      example: role_selected
+
+    NextStep:
+      type: string
+      description: Next required client step. `awaiting_rc_verification` is flag-on only.
+      enum:
+        - role_selection
+        - profile
+        - dl_submission
+        - awaiting_verification
+        - vehicle_registration
+        - awaiting_rc_verification
+        - none
+      example: profile
+
+    RCVerificationStatus:
+      type: string
+      nullable: true
+      description: |
+        Vehicle RC verification status. `null` when the flag is off, when no vehicle exists,
+        or for a legacy self-declared vehicle.
+      enum: [pending, verified, rejected, null]
+      example: pending
+
+    # -- Onboarding -----------------------------------------------------------
+    OnboardingStatusResponse:
+      type: object
+      required: [onboarding_status, active_role, next_step, profile_complete, dl_verification_status, rc_verification_status]
+      properties:
+        onboarding_status:
+          $ref: '#/components/schemas/OnboardingStatus'
+        active_role:
+          type: string
+          nullable: true
+          enum: [driver, passenger, null]
+          example: passenger
+        next_step:
+          $ref: '#/components/schemas/NextStep'
+        profile_complete:
+          type: boolean
+          description: Whether first_name/last_name/age/gender have been set
+          example: false
+        dl_verification_status:
+          type: string
+          nullable: true
+          enum: [pending, verified, rejected, null]
+          example: null
+        rc_verification_status:
+          allOf:
+            - $ref: '#/components/schemas/RCVerificationStatus'
+          description: |
+            Vehicle RC verification status of the newest active vehicle (additive field).
+            Always `null` while `RC_VERIFICATION_ENABLED` is off.
+
+    RoleSelectionRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [driver, passenger]
+          description: Active role to set (lowercase in request)
+          example: passenger
+
+    RoleSelectionResponse:
+      type: object
+      required: [active_role, onboarding_status, next_step]
+      properties:
+        active_role:
+          type: string
+          enum: [driver, passenger]
+          example: passenger
+        onboarding_status:
+          type: string
+          enum: [role_selected]
+          example: role_selected
+        next_step:
+          type: string
+          enum: [profile]
+          example: profile
+
+    ProfileDetailsRequest:
+      type: object
+      required: [first_name, last_name, age, gender]
+      properties:
+        first_name:
+          type: string
+          maxLength: 50
+          pattern: "^[\\w\\s'-]+$"
+          example: Priya
+        last_name:
+          type: string
+          maxLength: 50
+          pattern: "^[\\w\\s'-]+$"
+          example: Sharma
+        age:
+          type: integer
+          minimum: 18
+          maximum: 80
+          example: 27
+        gender:
+          type: string
+          enum: [male, female, other, prefer_not_to_say]
+          example: female
+
+    ProfileDetailsResponse:
+      type: object
+      required: [onboarding_status, next_step]
+      properties:
+        onboarding_status:
+          type: string
+          enum: [complete, awaiting_dl]
+          description: complete for passengers, awaiting_dl for drivers
+          example: complete
+        next_step:
+          type: string
+          enum: [none, dl_submission]
+          example: none
+
+    DLSubmissionRequest:
+      type: object
+      required: [dl_number]
+      properties:
+        dl_number:
+          type: string
+          maxLength: 20
+          pattern: "^[A-Z]{2}[0-9]{2}[ -]?[0-9]{4}[0-9]{7}$"
+          description: |
+            Indian driving licence number. Format: XX00 0000 0000000
+            (2 state letters, 2-digit RTO code, 4-digit year, 7-digit serial).
+            Spaces and hyphens are optional and ignored: the server uppercases the input, removes every
+            space and hyphen, then requires `^[A-Z]{2}[0-9]{13}$`. `maxLength` applies to the raw input.
+            The `pattern` above is the documented input form (FR-07); the server is more permissive about
+            where separators appear (ARCH-002 v7 KNOWN GAP KG-06).
+          example: "MH01 20110012345"
+
+    DLSubmissionResponse:
+      type: object
+      required: [dl_verification_status, onboarding_status, next_step]
+      properties:
+        dl_verification_status:
+          type: string
+          enum: [verified, pending]
+          description: |
+            Intended contract: `verified` or `pending`. KNOWN GAP KG-02: a synchronous provider rejection
+            currently returns `rejected` here (HTTP 202) with `onboarding_status` `awaiting_dl` or
+            `pending_verification` and the matching `next_step` (`dl_submission` / `awaiting_verification`).
+          example: verified
+        onboarding_status:
+          type: string
+          enum: [awaiting_vehicle, pending_verification]
+          example: awaiting_vehicle
+        next_step:
+          type: string
+          enum: [vehicle_registration, awaiting_verification]
+          example: vehicle_registration
+        reference_id:
+          type: string
+          nullable: true
+          description: Provider reference ID for async verification
+          example: mock-a1b2c3d4
+
+    DLStatusResponse:
+      type: object
+      required: [dl_verification_status, onboarding_status, rejection_reason, dl_number_display]
+      properties:
+        dl_verification_status:
+          type: string
+          enum: [pending, verified, rejected]
+          example: verified
+        onboarding_status:
+          $ref: '#/components/schemas/OnboardingStatus'
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Reason if rejected
+          example: null
+        dl_number_display:
+          type: string
+          description: Last 4 digits of DL number
+          example: "2345"
+
+    RoleSwitchRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [driver, passenger]
+          example: driver
+
+    RoleSwitchResponse:
+      type: object
+      required: [active_role, onboarding_status, dl_verification_status, next_step]
+      properties:
+        active_role:
+          type: string
+          enum: [driver, passenger]
+          example: driver
+        onboarding_status:
+          type: string
+          enum: [complete, awaiting_dl, pending_verification, awaiting_vehicle, pending_rc_verification]
+          description: |
+            `awaiting_dl` is returned when a user with no verified or pending DL switches to driver
+            (driver setup starts). `awaiting_vehicle` is returned when a user with a verified DL and no
+            active vehicle (and not grandfathered) switches to driver, in either flag mode.
+            `pending_rc_verification` is only returned while `RC_VERIFICATION_ENABLED` is on.
+          example: complete
+        dl_verification_status:
+          type: string
+          nullable: true
+          enum: [verified, pending, rejected, null]
+          description: '`null` when the user has never submitted a DL.'
+          example: verified
+        next_step:
+          type: string
+          enum: [none, dl_submission, awaiting_verification, vehicle_registration, awaiting_rc_verification]
+          description: |
+            The client's next onboarding step for the resulting `onboarding_status` (same mapping as
+            `GET /api/onboarding/status/`). Always present. It was previously present only for
+            `awaiting_vehicle` / `pending_rc_verification`; the field is additive.
+          example: none
+
+    VehicleRegistrationRequest:
+      type: object
+      required: [registration_number, vehicle_type]
+      properties:
+        registration_number:
+          type: string
+          maxLength: 15
+          pattern: "^[A-Z]{2}[0-9]{2}[A-Z]{1,3}[0-9]{1,4}$"
+          description: |
+            Indian vehicle registration number. Format: XX00XXX0000
+            (2-letter state code, 2-digit RTO code, 1-3 letter series, 1-4 digit number).
+            Spaces/hyphens optional; normalized to uppercase internally.
+          example: "MH01AB1234"
+        vehicle_type:
+          type: string
+          enum: [car, suv, hatchback, sedan, auto_rickshaw, bike]
+          description: Type of vehicle (lowercase in request)
+          example: sedan
+
+    VehicleRegistrationResponse:
+      type: object
+      required: [onboarding_status, next_step, vehicle, rc_verification_status, rejection_reason, reference_id]
+      properties:
+        onboarding_status:
+          type: string
+          enum: [complete, pending_rc_verification]
+          description: |
+            `complete` with the flag off, or with the flag on after a synchronous pass.
+            `pending_rc_verification` (flag on only) when verification is pending, timed out,
+            or flagged for admin review (HTTP 202).
+          example: complete
+        next_step:
+          type: string
+          enum: [none, awaiting_rc_verification]
+          example: none
+        vehicle:
+          type: object
+          required: [registration_number, vehicle_type]
+          properties:
+            registration_number:
+              type: string
+              example: "MH01AB1234"
+            vehicle_type:
+              type: string
+              description: Uppercase in responses (lowercase in the request)
+              enum: [CAR, SUV, HATCHBACK, SEDAN, AUTO_RICKSHAW, BIKE]
+              example: SEDAN
+        rc_verification_status:
+          allOf:
+            - $ref: '#/components/schemas/RCVerificationStatus'
+          description: |
+            Additive. `null` with the flag off; `verified` or `pending` with the flag on
+            (a rejection is returned as `422 rc_verification_rejected`, not in this body).
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Additive. Always `null` on success responses.
+          example: null
+        reference_id:
+          type: string
+          nullable: true
+          description: |
+            Additive. Verification reference; `null` with the flag off. With the flag on it is
+            the provider reference when one was issued.
+          example: null
+
+    VehicleStatusResponse:
+      type: object
+      required:
+        - onboarding_status
+        - next_step
+        - rc_verification_status
+        - rejection_reason
+        - registration_number
+        - vehicle_type
+        - rc_attempts_remaining
+      properties:
+        onboarding_status:
+          $ref: '#/components/schemas/OnboardingStatus'
+        next_step:
+          $ref: '#/components/schemas/NextStep'
+        rc_verification_status:
+          allOf:
+            - $ref: '#/components/schemas/RCVerificationStatus'
+          description: '`null` when the flag is off or no vehicle exists.'
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Sanitised reason; only set when `rc_verification_status` is `rejected`.
+          example: null
+        registration_number:
+          type: string
+          nullable: true
+          description: Registration number of the newest active vehicle; `null` when none.
+          example: "MH01AB1234"
+        vehicle_type:
+          type: string
+          nullable: true
+          description: Uppercase vehicle type; `null` when no vehicle exists.
+          enum: [CAR, SUV, HATCHBACK, SEDAN, AUTO_RICKSHAW, BIKE, null]
+          example: SEDAN
+        rc_attempts_remaining:
+          type: integer
+          nullable: true
+          description: Submissions left before `429 max_rc_attempts_exceeded`; `null` when the flag is off.
+          example: 2
+
+    WebhookRequest:
+      type: object
+      required: [reference_id, status]
+      description: |
+        Asynchronous DL verification result. Sent as JSON; the raw request body is what is signed
+        (see the `DLWebhookSignature` security scheme).
+      properties:
+        reference_id:
+          type: string
+          description: Provider reference ID from DL submission
+          example: mock-a1b2c3d4
+        status:
+          type: string
+          enum: [verified, rejected]
+          example: verified
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Provider rejection reason (sanitised before it is stored or shown to the driver; a blank value is stored as null)
+          example: null
+
+    RCWebhookRequest:
+      type: object
+      required: [reference_id, status]
+      description: |
+        Asynchronous RC verification result. Sent as JSON; the raw request body is what is signed
+        (see the `RCWebhookSignature` security scheme).
+      properties:
+        reference_id:
+          type: string
+          maxLength: 100
+          description: Reference ID returned as `reference_id` when the vehicle was submitted
+          example: mock-rc-1a2b3c4d
+        status:
+          type: string
+          enum: [verified, rejected]
+          example: verified
+        rejection_reason:
+          type: string
+          nullable: true
+          description: Provider rejection reason (sanitised before it is exposed to the driver)
+          example: null
+
+    WebhookProcessedResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          type: string
+          example: Webhook processed successfully.
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            message: Authentication credentials were not provided.
+            data: null
+            error:
+              code: not_authenticated
+              detail: Authentication credentials were not provided.
+              fields: null
+              retry_after: null
+            meta:
+              request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+              timestamp: "2026-09-23T10:00:00Z"
+
+    OnboardingIncomplete:
+      description: |
+        Onboarding not complete (only when `ONBOARDING_GATE_ENABLED` is on). The `error` object carries
+        the user's current `onboarding_status` and `next_step`; a user with no profile yet is reported
+        as `not_started` / `role_selection`.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  error:
+                    $ref: '#/components/schemas/OnboardingGateErrorDetail'
+          example:
+            success: false
+            message: Onboarding must be completed before accessing this endpoint.
+            data: null
+            error:
+              code: onboarding_incomplete
+              detail: Onboarding must be completed before accessing this endpoint.
+              fields: null
+              retry_after: null
+              onboarding_status: pending_rc_verification
+              next_step: awaiting_rc_verification
+            meta:
+              request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+              timestamp: "2026-09-23T10:00:00Z"
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+paths:
+
+  # -- Onboarding status ------------------------------------------------------
+  /api/onboarding/status/:
+    get:
+      summary: Get onboarding status
+      description: |
+        Returns the current onboarding state and the next required step.
+        Accessible to all authenticated users regardless of onboarding status.
+
+        `rc_verification_status` is additive: the RC status of the newest active vehicle
+        (`pending`, `verified`, `rejected`), or `null` when the RC flag is off or there is no vehicle.
+      operationId: onboarding_status
+      tags: [Onboarding]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current onboarding state
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/OnboardingStatusResponse'
+              example:
+                success: true
+                message: null
+                data:
+                  onboarding_status: not_started
+                  active_role: null
+                  next_step: role_selection
+                  profile_complete: false
+                  dl_verification_status: null
+                  rc_verification_status: null
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # -- Role selection ---------------------------------------------------------
+  /api/onboarding/role/:
+    post:
+      summary: Select user role
+      description: |
+        Set the active role during onboarding. Must be called before profile submission.
+        Can only be called once — subsequent calls return 409 Conflict.
+      operationId: role_select
+      tags: [Onboarding]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSelectionRequest'
+            example:
+              role: passenger
+      responses:
+        '200':
+          description: Role selected successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/RoleSelectionResponse'
+              example:
+                success: true
+                message: Role selected successfully.
+                data:
+                  active_role: passenger
+                  onboarding_status: role_selected
+                  next_step: profile
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: |
+            `invalid_role` - `role` is not `driver` or `passenger`. A missing or null `role` returns the
+            generic `invalid_request`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Role must be "driver" or "passenger".
+                data: null
+                error:
+                  code: invalid_role
+                  detail: Role must be "driver" or "passenger".
+                  fields:
+                    role: ['"admin" is not a valid choice.']
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Role already set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Role already set.
+                data: null
+                error:
+                  code: role_already_set
+                  detail: Role already set.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- Profile submission -----------------------------------------------------
+  /api/onboarding/profile/:
+    post:
+      summary: Submit profile details
+      description: |
+        Submit first name, last name, age, and gender. Must be called after role selection.
+        - **Passengers**: onboarding completes immediately (status → `complete`)
+        - **Drivers**: must proceed to DL submission (status → `awaiting_dl`)
+      operationId: profile_submit
+      tags: [Onboarding]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileDetailsRequest'
+            example:
+              first_name: Priya
+              last_name: Sharma
+              age: 27
+              gender: female
+      responses:
+        '200':
+          description: Profile submitted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/ProfileDetailsResponse'
+              examples:
+                passenger:
+                  summary: Passenger (onboarding complete)
+                  value:
+                    success: true
+                    message: Profile details saved successfully.
+                    data:
+                      onboarding_status: complete
+                      next_step: none
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+                driver:
+                  summary: Driver (needs DL)
+                  value:
+                    success: true
+                    message: Profile details saved successfully.
+                    data:
+                      onboarding_status: awaiting_dl
+                      next_step: dl_submission
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                invalid_age:
+                  summary: Age out of range
+                  value:
+                    success: false
+                    message: Age must be between 18 and 80
+                    data: null
+                    error:
+                      code: invalid_age
+                      detail: Age must be between 18 and 80
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+                invalid_gender:
+                  summary: Invalid gender value
+                  value:
+                    success: false
+                    message: Invalid gender.
+                    data: null
+                    error:
+                      code: invalid_gender
+                      detail: Invalid gender.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Profile already submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Profile already set.
+                data: null
+                error:
+                  code: profile_already_set
+                  detail: Profile already set.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- DL submission ----------------------------------------------------------
+  /api/onboarding/driver/dl/:
+    post:
+      summary: Submit driving licence for verification
+      description: |
+        Submit an Indian driving licence number for verification.
+        Only accessible to users with active_role = driver whose `onboarding_status` is `awaiting_dl` or
+        `pending_verification` (resubmission after a rejection or a timeout); in any other status the
+        response is `400 invalid_onboarding_state`.
+
+        **DL format**: XX00 0000 0000000 (2-letter state code, 13 digits)
+        Spaces/hyphens are optional and normalized server-side.
+
+        **Verification modes**:
+        - **Sync verified** (200): DL verified immediately; the driver moves on to vehicle registration
+          (`onboarding_status = awaiting_vehicle`, `next_step = vehicle_registration`)
+        - **Async pending** (202): Verification in progress, poll /api/onboarding/driver/dl/status/
+
+        **Attempt limit**: `DL_MAX_ATTEMPTS` submissions (default 3) before manual review is required.
+
+        **Known gaps (the implementation deviates from this contract; see ARCH-002 v7 "Known Gaps")**:
+        - KG-01: a malformed DL currently returns `400 invalid_request` (with `error.fields.dl_number`),
+          not `400 invalid_dl_format`.
+        - KG-02: a synchronous provider rejection currently returns `202` with
+          `dl_verification_status = rejected` (status unchanged, no `rejection_reason` in the body).
+        - KG-03: a passenger currently receives the generic `403 permission_denied`, not `not_a_driver`.
+      operationId: dl_submit
+      tags: [Driver Verification]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DLSubmissionRequest'
+            example:
+              dl_number: "MH01 20110012345"
+      responses:
+        '200':
+          description: DL verified synchronously
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/DLSubmissionResponse'
+              example:
+                success: true
+                message: Driving licence verified successfully.
+                data:
+                  dl_verification_status: verified
+                  onboarding_status: awaiting_vehicle
+                  next_step: vehicle_registration
+                  reference_id: mock-a1b2c3d4
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '202':
+          description: |
+            DL verification pending (async). KNOWN GAP KG-02: the implementation also returns `202`, with
+            `dl_verification_status = rejected`, for a synchronous provider rejection (the onboarding status
+            is unchanged and the body has no `rejection_reason`; read it from the DL status endpoint).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/DLSubmissionResponse'
+              example:
+                success: true
+                message: Driving licence verification in progress.
+                data:
+                  dl_verification_status: pending
+                  onboarding_status: pending_verification
+                  next_step: awaiting_verification
+                  reference_id: provider-ref-xyz789
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: |
+            Invalid DL format (`invalid_dl_format`), or `invalid_onboarding_state` when the driver is not in
+            `awaiting_dl` / `pending_verification`.
+            KNOWN GAP KG-01: for a malformed DL the implementation currently returns `error.code =
+            invalid_request` with the message in `error.detail` and in `error.fields.dl_number` (a generic
+            validation error), not `invalid_dl_format`. Clients should key on the `400` and on
+            `error.fields.dl_number` until this is resolved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Invalid DL format. Expected XX00 0000 0000000.
+                data: null
+                error:
+                  code: invalid_dl_format
+                  detail: Invalid DL format. Expected XX00 0000 0000000.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Not a driver. KNOWN GAP KG-03: for a passenger the implementation currently returns the generic
+            `permission_denied` code, not `not_a_driver`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Only drivers can submit a driving licence.
+                data: null
+                error:
+                  code: not_a_driver
+                  detail: Only drivers can submit a driving licence.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '409':
+          description: DL already verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Driving licence already verified.
+                data: null
+                error:
+                  code: dl_already_verified
+                  detail: Driving licence already verified.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '422':
+          description: DL verification provider error (the provider call failed, returned an invalid result, or the DL adapter is misconfigured). No attempt is consumed and nothing is persisted; a provider timeout is not an error (it yields `202` pending).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: DL verification service unavailable. Try again shortly.
+                data: null
+                error:
+                  code: dl_verification_provider_error
+                  detail: DL verification service unavailable. Try again shortly.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '429':
+          description: Maximum DL submission attempts exceeded (`DL_MAX_ATTEMPTS`, default 3). The count is enforced under a row lock, so parallel submissions cannot exceed it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Maximum DL submission attempts exceeded. Contact support.
+                data: null
+                error:
+                  code: max_dl_attempts_exceeded
+                  detail: Maximum DL submission attempts exceeded. Contact support.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+
+  # -- DL status polling ------------------------------------------------------
+  /api/onboarding/driver/dl/status/:
+    get:
+      summary: Get DL verification status
+      description: |
+        Poll for the current DL verification status.
+        Only accessible to drivers (active_role = driver).
+      operationId: dl_status
+      tags: [Driver Verification]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current DL verification status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/DLStatusResponse'
+              example:
+                success: true
+                message: null
+                data:
+                  dl_verification_status: verified
+                  onboarding_status: awaiting_vehicle
+                  rejection_reason: null
+                  dl_number_display: "2345"
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Not a driver. KNOWN GAP KG-03: for a passenger the implementation currently returns the generic
+            `permission_denied` code; `not_a_driver` is returned to a driver who has not submitted a DL yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  # -- DL webhook (async verification callback) -------------------------------
+  /api/onboarding/driver/dl/webhook/:
+    post:
+      summary: DL verification webhook callback
+      description: |
+        Receives async verification results from the DL provider.
+
+        **Not authenticated via JWT.** Calls are authenticated by the `X-DL-Signature` header: the
+        lowercase hex HMAC-SHA256 of the raw request body keyed with `DL_WEBHOOK_SECRET`, optionally
+        prefixed with `sha256=`. The signature is verified before the payload is parsed and before
+        any database access; a missing, empty or incorrect signature, or an unset secret, returns
+        `403 invalid_webhook_signature` and changes nothing.
+
+        Delivery is idempotent: a result for a DL that is already `verified` or `rejected` is
+        acknowledged with `200` and changes nothing (it is not an error). A `verified` result
+        advances the driver from `pending_verification` to `awaiting_vehicle` only; a user who has
+        since switched to passenger keeps their status. An unknown `reference_id` returns
+        `404 dl_reference_not_found`.
+      operationId: dl_webhook
+      tags: [Driver Verification]
+      security:
+        - DLWebhookSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRequest'
+            example:
+              reference_id: provider-ref-xyz789
+              status: verified
+              rejection_reason: null
+      responses:
+        '200':
+          description: Webhook processed successfully (also returned for an idempotent re-delivery of an already-resolved DL)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          detail:
+                            type: string
+                            example: Webhook processed successfully.
+              example:
+                success: true
+                message: null
+                data:
+                  detail: Webhook processed successfully.
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: Malformed payload (only reachable with a valid signature). `error.code` is `invalid_request` with `error.fields` naming the problem, for example a missing `reference_id` or a `status` other than `verified` / `rejected`; nothing is changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '403':
+          description: Missing, empty or invalid `X-DL-Signature`, or no `DL_WEBHOOK_SECRET` configured (no state change, no database access)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Webhook signature validation failed.
+                data: null
+                error:
+                  code: invalid_webhook_signature
+                  detail: Webhook signature validation failed.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-17T10:00:00Z"
+        '404':
+          description: Valid signature but unknown `reference_id` (`dl_reference_not_found`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: DL verification reference not found.
+                data: null
+                error:
+                  code: dl_reference_not_found
+                  detail: DL verification reference not found.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-17T10:00:00Z"
+
+  # -- Vehicle registration ----------------------------------------------------
+  /api/onboarding/driver/vehicle/:
+    post:
+      summary: Register vehicle during driver onboarding
+      description: |
+        Register a vehicle (registration number and type) as the final step of driver onboarding.
+        Only accessible to drivers (`active_role = driver`) with a verified DL and
+        `onboarding_status = awaiting_vehicle`. Not blocked by the onboarding gate.
+
+        **Vehicle registration format**: XX00XXX0000 (Indian format)
+        - 2-letter state code, 2-digit RTO code, 1-3 letter series, 1-4 digit number
+        - Spaces/hyphens optional; normalized server-side
+
+        **v1 limit**: One vehicle per driver. Multiple vehicles planned for a future release.
+
+        **Behaviour depends on `RC_VERIFICATION_ENABLED` (default: false)**
+
+        - **Flag off** (launch behaviour): format validation and self-declaration only. The vehicle is
+          created and the response is `200` with `onboarding_status = complete`, `next_step = none`.
+          `rc_verification_status`, `rejection_reason` and `reference_id` are `null`.
+        - **Flag on**: the registration number is checked by the RC verification adapter (only a mock
+          adapter exists; there is no real provider).
+          - `200` `complete` / `next_step = none` / `rc_verification_status = verified` - synchronous pass
+          - `202` `pending_rc_verification` / `next_step = awaiting_rc_verification` /
+            `rc_verification_status = pending` - provider pending, timed out, or flagged for review. The response
+            does not reveal which. Poll `GET /api/onboarding/driver/vehicle/status/`.
+          - `422 rc_verification_rejected` - the driver stays in `awaiting_vehicle` and may resubmit
+            (the same vehicle row is reused) until the attempt limit is reached.
+
+        Error codes marked **(flag on)** are never returned while the flag is off. The other error codes
+        apply with the flag on or off.
+      operationId: vehicle_register
+      tags: [Driver Verification]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VehicleRegistrationRequest'
+            example:
+              registration_number: "MH01AB1234"
+              vehicle_type: sedan
+      responses:
+        '200':
+          description: Vehicle registered, onboarding complete (flag off, or flag on with a synchronous pass)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/VehicleRegistrationResponse'
+              examples:
+                flag_off:
+                  summary: RC verification flag off (self-declared vehicle)
+                  value:
+                    success: true
+                    message: Vehicle registered successfully. Onboarding complete.
+                    data:
+                      onboarding_status: complete
+                      next_step: none
+                      vehicle:
+                        registration_number: MH01AB1234
+                        vehicle_type: SEDAN
+                      rc_verification_status: null
+                      rejection_reason: null
+                      reference_id: null
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-10T10:00:00Z"
+                flag_on_verified:
+                  summary: Flag on, verified synchronously
+                  value:
+                    success: true
+                    message: Vehicle registered successfully. Onboarding complete.
+                    data:
+                      onboarding_status: complete
+                      next_step: none
+                      vehicle:
+                        registration_number: MH01AB1234
+                        vehicle_type: SEDAN
+                      rc_verification_status: verified
+                      rejection_reason: null
+                      reference_id: mock-rc-1a2b3c4d
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '202':
+          description: |
+            **(flag on)** Vehicle submitted; verification is pending, timed out, or flagged for review.
+            `onboarding_status = pending_rc_verification`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/VehicleRegistrationResponse'
+              example:
+                success: true
+                message: Vehicle submitted for verification.
+                data:
+                  onboarding_status: pending_rc_verification
+                  next_step: awaiting_rc_verification
+                  vehicle:
+                    registration_number: MH01AB1234
+                    vehicle_type: SEDAN
+                  rc_verification_status: pending
+                  rejection_reason: null
+                  reference_id: mock-rc-1a2b3c4d
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+        '400':
+          description: Invalid registration format or vehicle type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                invalid_format:
+                  summary: Invalid registration number format
+                  value:
+                    success: false
+                    message: "Invalid vehicle registration format. Expected: XX00XXX0000 (e.g. MH01AB1234)"
+                    data: null
+                    error:
+                      code: invalid_registration_format
+                      detail: "Invalid vehicle registration format. Expected: XX00XXX0000 (e.g. MH01AB1234)"
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-10T10:00:00Z"
+                invalid_type:
+                  summary: Invalid vehicle type
+                  value:
+                    success: false
+                    message: "Vehicle type must be one of: car, suv, hatchback, sedan, auto_rickshaw, bike."
+                    data: null
+                    error:
+                      code: invalid_vehicle_type
+                      detail: "Vehicle type must be one of: car, suv, hatchback, sedan, auto_rickshaw, bike."
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-10T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not a driver or DL not verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                not_a_driver:
+                  summary: User is not a driver (e.g. active role is passenger)
+                  value:
+                    success: false
+                    message: This endpoint is only accessible to drivers.
+                    data: null
+                    error:
+                      code: not_a_driver
+                      detail: This endpoint is only accessible to drivers.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-10T10:00:00Z"
+                dl_not_verified:
+                  summary: DL not yet verified (driver not in awaiting_vehicle)
+                  value:
+                    success: false
+                    message: Driving licence must be verified before registering a vehicle.
+                    data: null
+                    error:
+                      code: dl_not_verified
+                      detail: Driving licence must be verified before registering a vehicle.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-10T10:00:00Z"
+        '409':
+          description: |
+            Conflict. `vehicle_already_registered` applies with the flag on or off (a driver whose
+            onboarding is already `complete`, or who already has an active vehicle).
+            `rc_verification_pending` and `rc_already_verified` are **flag on only**.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                vehicle_already_registered:
+                  summary: Vehicle already registered
+                  value:
+                    success: false
+                    message: A vehicle is already registered for this account.
+                    data: null
+                    error:
+                      code: vehicle_already_registered
+                      detail: A vehicle is already registered for this account.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-10T10:00:00Z"
+                rc_verification_pending:
+                  summary: (flag on) A submission is already being verified
+                  value:
+                    success: false
+                    message: Your vehicle is already being verified.
+                    data: null
+                    error:
+                      code: rc_verification_pending
+                      detail: Your vehicle is already being verified.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+                rc_already_verified:
+                  summary: (flag on) The vehicle is already verified
+                  value:
+                    success: false
+                    message: Your vehicle is already verified.
+                    data: null
+                    error:
+                      code: rc_already_verified
+                      detail: Your vehicle is already verified.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '422':
+          description: |
+            **(flag on only)** `rc_verification_rejected` - the RC was rejected (not found, blocked, or a
+            clear vehicle-class conflict); the attempt is consumed and the driver stays in
+            `awaiting_vehicle`. `rc_verification_provider_error` - the provider call failed with a
+            non-timeout error; the attempt is not consumed and the client may retry.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - allOf:
+                      - $ref: '#/components/schemas/ErrorEnvelope'
+                      - type: object
+                        properties:
+                          error:
+                            $ref: '#/components/schemas/RCRejectedErrorDetail'
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                rc_verification_rejected:
+                  summary: RC rejected (extra flat keys inside error)
+                  value:
+                    success: false
+                    message: Mock rejection for testing
+                    data: null
+                    error:
+                      code: rc_verification_rejected
+                      detail: Mock rejection for testing
+                      fields: null
+                      retry_after: null
+                      onboarding_status: awaiting_vehicle
+                      next_step: vehicle_registration
+                      rc_verification_status: rejected
+                      rc_attempts_remaining: 2
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+                rc_verification_provider_error:
+                  summary: Provider call failed (attempt not consumed)
+                  value:
+                    success: false
+                    message: Vehicle verification is temporarily unavailable. Please try again.
+                    data: null
+                    error:
+                      code: rc_verification_provider_error
+                      detail: Vehicle verification is temporarily unavailable. Please try again.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '429':
+          description: "**(flag on only)** Maximum RC verification attempts reached (`RC_MAX_ATTEMPTS`, default 3); staff action required"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Maximum vehicle verification attempts exceeded. Please contact support.
+                data: null
+                error:
+                  code: max_rc_attempts_exceeded
+                  detail: Maximum vehicle verification attempts exceeded. Please contact support.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+
+  # -- Vehicle RC status polling -----------------------------------------------
+  /api/onboarding/driver/vehicle/status/:
+    get:
+      summary: Get vehicle RC verification status
+      description: |
+        Poll the driver's vehicle / RC verification state. Requires `active_role = driver`.
+        **Not blocked by the onboarding gate**, so a driver in `pending_rc_verification` can poll.
+
+        Owner name and other RC owner data are never returned. `rejection_reason` is sanitised and only
+        set when `rc_verification_status = rejected`.
+
+        With the flag off, `rc_verification_status` and `rc_attempts_remaining` are `null`.
+        When the driver has no vehicle yet, `registration_number` and `vehicle_type` are `null`.
+      operationId: vehicle_status
+      tags: [Driver Verification]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current vehicle / RC verification status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/VehicleStatusResponse'
+              examples:
+                pending:
+                  summary: Flag on, verification pending
+                  value:
+                    success: true
+                    message: null
+                    data:
+                      onboarding_status: pending_rc_verification
+                      next_step: awaiting_rc_verification
+                      rc_verification_status: pending
+                      rejection_reason: null
+                      registration_number: MH01AB1234
+                      vehicle_type: SEDAN
+                      rc_attempts_remaining: 2
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+                flag_off_no_vehicle:
+                  summary: Flag off, no vehicle yet
+                  value:
+                    success: true
+                    message: null
+                    data:
+                      onboarding_status: awaiting_vehicle
+                      next_step: vehicle_registration
+                      rc_verification_status: null
+                      rejection_reason: null
+                      registration_number: null
+                      vehicle_type: null
+                      rc_attempts_remaining: null
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Not a driver
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: This endpoint is only accessible to drivers.
+                data: null
+                error:
+                  code: not_a_driver
+                  detail: This endpoint is only accessible to drivers.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+
+  # -- RC webhook (async verification callback) --------------------------------
+  /api/onboarding/driver/vehicle/rc/webhook/:
+    post:
+      summary: RC verification webhook callback
+      description: |
+        Receives an asynchronous RC verification result (for example for a vehicle left in
+        `pending_rc_verification`).
+
+        **Not authenticated via JWT.** Calls are authenticated by the `X-RC-Signature` header: the
+        lowercase hex HMAC-SHA256 of the raw request body keyed with `RC_WEBHOOK_SECRET`, optionally
+        prefixed with `sha256=`. The signature is verified before the payload is parsed and before any
+        database access.
+
+        **Flag off**: always `404` (nothing is read or changed).
+
+        **Outcomes** (flag on): `verified` moves the driver to `complete`; `rejected` moves a
+        `pending_rc_verification` driver back to `awaiting_vehicle`. A verified result may still leave the
+        vehicle pending (for example when the owner name needs review). The call is idempotent: a result
+        for a vehicle that is already verified or rejected returns `409 already_processed`.
+        The provider should retry on any non-`200`.
+      operationId: rc_webhook
+      tags: [Driver Verification]
+      security:
+        - RCWebhookSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RCWebhookRequest'
+            example:
+              reference_id: mock-rc-1a2b3c4d
+              status: verified
+              rejection_reason: null
+      responses:
+        '200':
+          description: Webhook processed successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/WebhookProcessedResponse'
+              example:
+                success: true
+                message: null
+                data:
+                  detail: Webhook processed successfully.
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+        '400':
+          description: Malformed payload (invalid JSON, missing or invalid `reference_id` / `status`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Webhook payload is invalid.
+                data: null
+                error:
+                  code: invalid_webhook_payload
+                  detail: Webhook payload is invalid.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+        '403':
+          description: Missing or invalid webhook signature (no state change)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: Webhook signature validation failed.
+                data: null
+                error:
+                  code: invalid_webhook_signature
+                  detail: Webhook signature validation failed.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+        '404':
+          description: |
+            Either the RC verification flag is off (`not_found`, returned for every request), or the
+            `reference_id` is unknown (`rc_reference_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                flag_off:
+                  summary: Flag off
+                  value:
+                    success: false
+                    message: Not found.
+                    data: null
+                    error:
+                      code: not_found
+                      detail: Not found.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+                unknown_reference:
+                  summary: Unknown reference_id
+                  value:
+                    success: false
+                    message: RC verification reference not found.
+                    data: null
+                    error:
+                      code: rc_reference_not_found
+                      detail: RC verification reference not found.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '409':
+          description: Result already processed (idempotent re-delivery)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                message: This webhook result has already been processed.
+                data: null
+                error:
+                  code: already_processed
+                  detail: This webhook result has already been processed.
+                  fields: null
+                  retry_after: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-15T10:00:00Z"
+
+  # -- Role switching ---------------------------------------------------------
+  /api/profile/role/:
+    patch:
+      summary: Switch active role
+      description: |
+        Switch the active role between driver and passenger. This is also how a passenger becomes a
+        driver: switching to driver without a verified DL starts driver setup.
+
+        **Eligibility** (both flag modes): `onboarding_status` must be one of `complete`, `awaiting_dl`,
+        `pending_verification`, `awaiting_vehicle`, `pending_rc_verification`. Users who have not finished
+        role selection and profile details (`not_started`, `role_selected`) receive
+        `403 onboarding_incomplete` (with `onboarding_status` and `next_step` in `error`).
+
+        **Switching to passenger** (always possible, both flag modes): immediate. From any eligible state
+        the result is `onboarding_status = complete`, `active_role = passenger`. Existing
+        `DriverVerification` and `Vehicle` rows are kept, so nobody is locked out of the app mid driver setup.
+
+        **Switching to driver** (a request for the role the user already has is a no-op):
+        - DL **verified**: the status is derived from the vehicle so `complete` is never reached without a
+          vehicle.
+          - An active vehicle exists, or the user is grandfathered (`vehicle_step_exempt`) -> `complete`.
+            With `RC_VERIFICATION_ENABLED` on the vehicle's RC status decides: verified or legacy (no RC
+            status) -> `complete`; pending -> `pending_rc_verification`; rejected -> `awaiting_vehicle`.
+            With the flag off an active vehicle always gives `complete`.
+          - No active vehicle and not grandfathered -> `awaiting_vehicle`, `next_step = vehicle_registration`.
+        - DL **pending**: `pending_verification` (HTTP 202), unchanged.
+        - **No DL submitted, or DL rejected**: driver setup starts. `active_role = driver`,
+          `onboarding_status = awaiting_dl`, `next_step = dl_submission` (HTTP 200). The user then follows
+          the normal flow: `POST /api/onboarding/driver/dl/`, then vehicle registration. The DL attempt
+          limit still applies to resubmission after a rejection.
+        - A user in `awaiting_vehicle` whose `active_role` is not yet `driver` (inconsistent legacy data
+          only) cannot switch to driver: with the flag on this returns `400 invalid_onboarding_state`; with
+          the flag off it returns `403 onboarding_incomplete`. Switching such a user to passenger
+          completes them, after which the switch to driver is derived as above.
+
+        Only `pending_verification` returns HTTP 202. The former `400 dl_required` response is no longer
+        returned by this endpoint.
+      operationId: role_switch
+      tags: [Profile]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleSwitchRequest'
+            example:
+              role: driver
+      responses:
+        '200':
+          description: Role switched successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/RoleSwitchResponse'
+              examples:
+                driver_setup_started:
+                  summary: Passenger with no DL (or a rejected DL) switched to driver; driver setup starts
+                  value:
+                    success: true
+                    message: Role switched successfully.
+                    data:
+                      active_role: driver
+                      onboarding_status: awaiting_dl
+                      dl_verification_status: null
+                      next_step: dl_submission
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-17T10:00:00Z"
+                complete:
+                  summary: Switched to driver (verified DL and an active vehicle), onboarding complete
+                  value:
+                    success: true
+                    message: Role switched successfully.
+                    data:
+                      active_role: driver
+                      onboarding_status: complete
+                      dl_verification_status: verified
+                      next_step: none
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-09-23T10:00:00Z"
+                pending_rc_verification:
+                  summary: (flag on) Switched to driver, vehicle RC verification pending
+                  value:
+                    success: true
+                    message: Role switched successfully.
+                    data:
+                      active_role: driver
+                      onboarding_status: pending_rc_verification
+                      dl_verification_status: verified
+                      next_step: awaiting_rc_verification
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+                awaiting_vehicle:
+                  summary: Switched to driver; no active vehicle (either flag mode) or previous vehicle was rejected (flag on)
+                  value:
+                    success: true
+                    message: Role switched successfully.
+                    data:
+                      active_role: driver
+                      onboarding_status: awaiting_vehicle
+                      dl_verification_status: verified
+                      next_step: vehicle_registration
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+                passenger_from_awaiting_states:
+                  summary: awaiting_dl, awaiting_vehicle, pending_verification or pending_rc_verification user switched to passenger (both flag modes)
+                  value:
+                    success: true
+                    message: Role switched successfully.
+                    data:
+                      active_role: passenger
+                      onboarding_status: complete
+                      dl_verification_status: verified
+                      next_step: none
+                    error: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '202':
+          description: Role switched to driver but DL is pending
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/RoleSwitchResponse'
+              example:
+                success: true
+                message: Role switched successfully.
+                data:
+                  active_role: driver
+                  onboarding_status: pending_verification
+                  dl_verification_status: pending
+                  next_step: awaiting_verification
+                error: null
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-09-23T10:00:00Z"
+        '400':
+          description: |
+            `invalid_role` - `role` is not `driver` or `passenger` (a missing or null `role` returns the
+            generic `invalid_request`).
+            `invalid_onboarding_state` - (flag on) a user in `awaiting_vehicle` whose `active_role` is not
+            `driver` (inconsistent legacy data) switching to driver; no state changes.
+            A user whose onboarding is not far enough along receives `403 onboarding_incomplete` instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                invalid_role:
+                  summary: Unsupported role value
+                  value:
+                    success: false
+                    message: Role must be "driver" or "passenger".
+                    data: null
+                    error:
+                      code: invalid_role
+                      detail: Role must be "driver" or "passenger".
+                      fields:
+                        role: ['"admin" is not a valid choice.']
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-17T10:00:00Z"
+                invalid_onboarding_state:
+                  summary: (flag on) awaiting_vehicle user whose active_role is not driver cannot switch to driver
+                  value:
+                    success: false
+                    message: Finish vehicle registration first, or switch to passenger.
+                    data: null
+                    error:
+                      code: invalid_onboarding_state
+                      detail: Finish vehicle registration first, or switch to passenger.
+                      fields: null
+                      retry_after: null
+                    meta:
+                      request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                      timestamp: "2026-10-15T10:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            `onboarding_incomplete` - the user has not finished role selection and profile details
+            (`not_started` or `role_selected`), so they are not eligible for a role switch. (Also returned,
+            with the flag off, for an `awaiting_vehicle` user whose `active_role` is not `driver` switching
+            to driver; inconsistent legacy data only.) The `error` object carries the user's current
+            `onboarding_status` and `next_step`, in the same shape the onboarding gate returns; a user
+            with no profile yet is reported as `not_started` / `role_selection`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      error:
+                        $ref: '#/components/schemas/OnboardingGateErrorDetail'
+              example:
+                success: false
+                message: Onboarding must be completed before accessing this endpoint.
+                data: null
+                error:
+                  code: onboarding_incomplete
+                  detail: Onboarding must be completed before accessing this endpoint.
+                  fields: null
+                  retry_after: null
+                  onboarding_status: role_selected
+                  next_step: profile
+                meta:
+                  request_id: 9f1c2b7e4a6d4f0f8b3c1d2e5a7b9c0d
+                  timestamp: "2026-10-17T10:00:00Z"
