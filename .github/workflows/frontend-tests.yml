@@ -1,0 +1,78 @@
+name: Frontend Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-tests.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-tests.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: 'npm'
+        cache-dependency-path: 'frontend/package-lock.json'
+
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+
+    - name: Check for test script
+      id: check_tests
+      working-directory: ./frontend
+      run: |
+        if grep -q '"test"' package.json; then
+          echo "has_tests=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_tests=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run tests
+      if: steps.check_tests.outputs.has_tests == 'true'
+      working-directory: ./frontend
+      run: npm test -- --passWithNoTests
+
+    - name: Run lint (if configured)
+      if: steps.check_tests.outputs.has_tests == 'true'
+      working-directory: ./frontend
+      continue-on-error: true
+      run: |
+        if grep -q '"lint"' package.json; then
+          npm run lint
+        else
+          echo "No lint script found, skipping"
+        fi
+
+    - name: Type check (if TypeScript)
+      working-directory: ./frontend
+      continue-on-error: true
+      run: |
+        if [ -f "tsconfig.json" ]; then
+          npx tsc --noEmit
+        else
+          echo "No TypeScript config found, skipping"
+        fi
+
+    - name: Test Summary
+      if: always()
+      run: |
+        if [ "${{ steps.check_tests.outputs.has_tests }}" = "false" ]; then
+          echo "⚠️ No test script configured in package.json"
+          echo "Add a test script to enable frontend testing"
+        else
+          echo "Frontend tests completed"
+        fi

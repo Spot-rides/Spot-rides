@@ -10,6 +10,9 @@ Failure::
      "error": {"code": ..., "detail": ..., "fields": ..., "retry_after": ...},
      "meta": {...}}
 
+``error`` may carry additional flat keys supplied through ``extra`` (e.g.
+``next_step``); the four keys above are reserved and cannot be overridden.
+
 ``meta`` is attached by :class:`core.renderers.EnvelopeJSONRenderer` at render
 time so the builders below stay free of request state.
 """
@@ -31,6 +34,16 @@ def success_envelope(data: Any, message: Optional[str] = None) -> dict:
     }
 
 
+RESERVED_ERROR_KEYS = frozenset({'code', 'detail', 'fields', 'retry_after'})
+
+
+def check_error_extra(extra: Optional[dict]) -> None:
+    """Reject ``extra`` keys that would overwrite the closed error keys."""
+    clash = RESERVED_ERROR_KEYS.intersection(extra or ())
+    if clash:
+        raise ValueError(f"error extra may not use reserved keys: {sorted(clash)}")
+
+
 def error_envelope(
     code: str,
     detail: str,
@@ -38,17 +51,22 @@ def error_envelope(
     message: Optional[str] = None,
     fields: Optional[dict] = None,
     retry_after: Optional[int] = None,
+    extra: Optional[dict] = None,
 ) -> dict:
+    check_error_extra(extra)
+    error = {
+        'code': code,
+        'detail': detail,
+        'fields': fields or None,
+        'retry_after': int(retry_after) if retry_after is not None else None,
+    }
+    if extra:
+        error.update(extra)
     return {
         'success': False,
         'message': message or detail,
         'data': None,
-        'error': {
-            'code': code,
-            'detail': detail,
-            'fields': fields or None,
-            'retry_after': int(retry_after) if retry_after is not None else None,
-        },
+        'error': error,
     }
 
 

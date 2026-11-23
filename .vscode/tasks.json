@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Backend: Run Django",
+      "type": "shell",
+      "command": ".\\venv\\Scripts\\Activate.ps1 ; py manage.py runserver",
+      "options": {
+        "cwd": "${workspaceFolder}/backend",
+        "shell": {
+          "executable": "powershell.exe",
+          "args": ["-NoProfile", "-Command"]
+        }
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "spot-rides"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend: Run Android",
+      "type": "shell",
+      "command": "npm run android",
+      "options": {
+        "cwd": "${workspaceFolder}/frontend"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "spot-rides"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Start All",
+      "dependsOn": ["Backend: Run Django", "Frontend: Run Android"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

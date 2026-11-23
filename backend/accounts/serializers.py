@@ -91,7 +91,22 @@ class LogoutSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     """Read-only projection returned by ``/api/auth/me/`` and verify."""
 
+    onboarding_status = serializers.SerializerMethodField()
+    active_role = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ('id', 'phone_number', 'date_joined')
-        read_only_fields = fields
+        fields = ['id', 'phone_number', 'date_joined', 'onboarding_status', 'active_role']
+        read_only_fields = ['id', 'phone_number', 'date_joined', 'onboarding_status', 'active_role']
+
+    def get_onboarding_status(self, obj):
+        """Get user's onboarding status from profile."""
+        if hasattr(obj, 'profile'):
+            return obj.profile.onboarding_status
+        return None
+
+    def get_active_role(self, obj):
+        """Get user's active role from profile."""
+        if hasattr(obj, 'profile'):
+            return obj.profile.active_role
+        return None

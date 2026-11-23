@@ -18,7 +18,7 @@ from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
-from .envelope import error_envelope
+from .envelope import check_error_extra, error_envelope
 
 logger = logging.getLogger('core')
 
@@ -30,9 +30,18 @@ class ApiError(APIException):
     error_code = 'error'
     default_detail = 'Request could not be processed.'
 
-    def __init__(self, detail: Optional[str] = None, retry_after: Optional[int] = None):
+    def __init__(
+        self,
+        detail: Optional[str] = None,
+        retry_after: Optional[int] = None,
+        extra: Optional[dict] = None,
+        fields: Optional[dict] = None,
+    ):
+        check_error_extra(extra)
         super().__init__(detail or self.default_detail)
         self.retry_after = retry_after
+        self.extra = dict(extra) if extra else None
+        self.fields = dict(fields) if fields else None
 
 
 def envelope_exception_handler(exc, context):
@@ -40,7 +49,13 @@ def envelope_exception_handler(exc, context):
 
     if isinstance(exc, ApiError):
         response = Response(
-            error_envelope(exc.error_code, str(exc.detail), retry_after=exc.retry_after),
+            error_envelope(
+                exc.error_code,
+                str(exc.detail),
+                retry_after=exc.retry_after,
+                extra=exc.extra,
+                fields=exc.fields,
+            ),
             status=exc.status_code,
         )
         if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS and exc.retry_after is not None:

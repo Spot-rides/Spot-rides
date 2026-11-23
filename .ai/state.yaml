@@ -22,4 +22,22 @@ active_features:
       - "Code review stage has not run: no docs/reviews/FEAT-001-otp-phone-authentication-code-review.md artifact exists."
       - "Security review stage has not run: no docs/reviews/FEAT-001-otp-phone-authentication-security-review.md artifact exists."
 
+  - id: FEAT-002
+    title: User Onboarding Flow
+    status: blocked
+    stages:
+      requirements: partial
+      architecture: passed
+      planning: passed
+      implementation: partial
+      testing: not_started
+      code_review: not_started
+      security: not_started
+    blockers:
+      - "Requirements gate: 4 blocking open questions (OQ-01, OQ-02, OQ-04, OQ-06) not formally resolved in docs/requirements/FEAT-002-user-onboarding.md. All are architecturally mitigated but the requirements document has not been updated."
+      - "Implementation gate: all 42 plan tasks still marked 'pending' in docs/plans/PLAN-002-user-onboarding.md (task statuses not advanced to 'complete')."
+      - "Testing stage has not run: no docs/reviews/FEAT-002-testing.md artifact exists. Only partial unit tests (serializers, permissions) exist; integration tests missing."
+      - "Code review stage has not run: no docs/reviews/FEAT-002-code-review.md artifact exists."
+      - "Security review stage has not run: no docs/reviews/FEAT-002-security-review.md artifact exists. Critical given PII handling, encryption, and webhook endpoint."
+
 features: {}
