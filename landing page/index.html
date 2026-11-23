@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot Rides | Ride sharing for Hyderabad college students</title>
+<meta name="description" content="Share bike and car rides to college with verified students on your route. Split fuel costs, choose women only rides and join the free Hyderabad pilot.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Spot Rides | Share the ride to college, split the fuel">
+<meta property="og:description" content="Verified college students in Hyderabad sharing bike and car rides on the same route. ₹3 per km toward fuel. Join the free pilot.">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#090526">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type": "Question", "name": "Is it free?", "acceptedAnswer": {"@type": "Answer", "text": "Joining is free. You only share the fuel cost directly with the student you ride with."}},
+    {"@type": "Question", "name": "Who can join?", "acceptedAnswer": {"@type": "Answer", "text": "Students of our pilot colleges in Hyderabad. We add more colleges as routes fill up."}},
+    {"@type": "Question", "name": "How do you verify students?", "acceptedAnswer": {"@type": "Answer", "text": "A student volunteer checks your college ID on WhatsApp before adding you to a route group."}},
+    {"@type": "Question", "name": "How much do I pay per ride?", "acceptedAnswer": {"@type": "Answer", "text": "₹3 per km, paid directly to the rider over UPI. A 10 km ride costs ₹30."}},
+    {"@type": "Question", "name": "Is this a taxi service?", "acceptedAnswer": {"@type": "Answer", "text": "No. Students share rides they are already taking and split the fuel cost. Nobody earns a profit."}},
+    {"@type": "Question", "name": "Is it safe for women?", "acceptedAnswer": {"@type": "Answer", "text": "You can choose women only rides, and every member is a verified student."}},
+    {"@type": "Question", "name": "What if my ride cancels?", "acceptedAnswer": {"@type": "Answer", "text": "The rider posts a cancel update in the group so you can pick another ride on your route."}},
+    {"@type": "Question", "name": "Do I need to install an app?", "acceptedAnswer": {"@type": "Answer", "text": "No. The pilot runs entirely on WhatsApp."}},
+    {"@type": "Question", "name": "What happens to my data?", "acceptedAnswer": {"@type": "Answer", "text": "Your number is shared only with the riders you match with. Read the privacy policy at the bottom of this page."}}
+  ]
+}
+</script>
+<style>
+:root{
+  --ink:#090526;--ink-2:#3B3760;--muted:#5B5872;--line:#E6E5EE;--tint:#F3F2F8;
+  --white:#FFFFFF;--lime:#C6F135;--on-dark:#CFCDE0;--no:#B4233C;
+  --ease:cubic-bezier(0.22,1,0.36,1);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--white);color:var(--ink);font-family:Manrope,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--ink)}a:hover{color:var(--ink-2)}
+h1,h2,h3{margin:0;font-weight:600;text-wrap:balance}
+p{margin:0;text-wrap:pretty}
+ul,ol{margin:0;padding:0;list-style:none}
+svg{flex:none}
+
+/* text styles */
+.heading-1{font-size:36px;line-height:40px}
+.heading-2{font-size:30px;line-height:36px}
+.heading-6{font-size:20px;line-height:28px}
+.tagline{font-size:30px;line-height:36px;font-weight:600}
+.body-lead{font-size:18px;line-height:28px;color:var(--ink-2)}
+.body-3{font-size:16px;line-height:24px;color:var(--ink-2)}
+.body-5{font-size:14px;line-height:20px;font-weight:500}
+.caption-2{font-size:14px;line-height:20px;color:var(--muted)}
+.caption-5{font-size:12px;line-height:16px;color:var(--muted)}
+.eyebrow{font-size:14px;line-height:20px;font-weight:600;color:var(--muted)}
+
+.grad{background:linear-gradient(90deg,#000000,#666666);-webkit-background-clip:text;background-clip:text;color:transparent}
+.container{max-width:1120px;margin:0 auto}
+.sec{padding:64px 24px}
+.tint{background:var(--tint)}
+.stack{display:flex;flex-direction:column}
+.head{display:flex;flex-direction:column;gap:16px;max-width:680px}
+.grid-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}
+.card{background:var(--white);border:1px solid var(--line);border-radius:24px;padding:32px;display:flex;flex-direction:column;gap:16px}
+.icon-tile{width:48px;height:48px;border-radius:16px;background:var(--tint);display:flex;align-items:center;justify-content:center}
+.dot-logo{width:24px;height:24px;border-radius:9999px;background:var(--ink);display:flex;align-items:center;justify-content:center}
+.dot-logo span{width:8px;height:8px;border-radius:9999px;background:var(--lime)}
+
+/* skip link */
+.skip{position:absolute;left:16px;top:-80px;background:var(--ink);color:var(--white);padding:12px 16px;border-radius:8px;z-index:60}
+.skip:focus{top:16px;color:var(--white)}
+
+/* nav */
+.nav-wrap{position:sticky;top:0;z-index:40;padding:12px 16px;display:flex;justify-content:center}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:24px;width:100%;max-width:760px;padding:8px 8px 8px 16px;background:rgba(255,255,255,.8);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--line);border-radius:9999px}
+.brand{display:flex;align-items:center;gap:8px;text-decoration:none;color:var(--ink);font-size:16px;line-height:24px;font-weight:700}
+.navlinks{display:none;gap:24px;align-items:center}
+.navlink{text-decoration:none;color:var(--ink-2);font-size:14px;line-height:20px;font-weight:500;transition:color 300ms var(--ease)}
+.navlink:hover,.navlink[aria-current="true"]{color:var(--ink)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;gap:8px;border-radius:9999px;text-decoration:none;font-weight:600;transition:transform 300ms var(--ease),background-color 300ms var(--ease)}
+.btn:hover{transform:translateY(-2px)}
+.btn:active{transform:scale(.98)}
+.btn-sm{min-height:40px;padding:8px 16px;font-size:14px;line-height:20px;background:var(--ink);color:var(--white)}
+.btn-md{min-height:48px;padding:12px 24px;font-size:16px;line-height:24px}
+.btn-dark{background:var(--ink);color:var(--white)}
+.btn-dark:hover{color:var(--white)}
+.btn-lime{background:var(--lime);color:var(--ink)}
+.btn-lime:hover{color:var(--ink)}
+.btn-sm:hover{color:var(--white)}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.dark :focus-visible{outline-color:var(--white)}
+
+/* hero */
+.hero{padding-top:48px}
+.hero-row{display:flex;flex-wrap:wrap;gap:64px;align-items:center}
+.hero-copy{flex:1 1 480px;min-width:0;display:flex;flex-direction:column;gap:24px}
+.pill{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;padding:4px 12px;border-radius:9999px;background:var(--tint);font-size:12px;line-height:16px;font-weight:600;color:var(--ink-2)}
+.pill i{width:8px;height:8px;border-radius:9999px;background:#2E9E5B}
+.proof{display:flex;flex-wrap:wrap;gap:16px;padding-top:8px}
+.proof span{display:inline-flex;align-items:center;gap:8px;color:var(--ink-2)}
+.hero-visual{flex:1 1 320px;min-width:0;display:flex;justify-content:center}
+.phone{width:100%;max-width:340px;padding:8px;border-radius:40px;background:var(--ink)}
+.phone-in{border-radius:32px;background:var(--tint);overflow:hidden}
+.chat-head{display:flex;align-items:center;gap:12px;padding:24px 16px 16px;background:var(--white);border-bottom:1px solid var(--line)}
+.chat-head .av{width:40px;height:40px;border-radius:9999px;background:var(--ink);display:flex;align-items:center;justify-content:center}
+.chat-head .av span{width:12px;height:12px;border-radius:9999px;background:var(--lime)}
+.chat{display:flex;flex-direction:column;gap:12px;padding:16px}
+.bubble{max-width:92%;border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:4px}
+.bubble .who{font-size:12px;line-height:16px;font-weight:600;color:var(--ink-2)}
+.bubble .msg{font-size:14px;line-height:20px;font-weight:500}
+.bubble .time{align-self:flex-end;font-size:12px;line-height:16px;color:var(--muted)}
+.b-in{align-self:flex-start;background:var(--white);border:1px solid var(--line)}
+.b-out{align-self:flex-end;background:#DCF5C4}
+.b-out .time{color:var(--ink-2)}
+.matched{align-self:center;display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9999px;background:var(--ink);color:var(--white);font-size:12px;line-height:16px;font-weight:600}
+
+/* problem */
+.list-check{display:flex;flex-direction:column;gap:16px}
+.list-check li{display:flex;gap:12px;font-size:16px;line-height:24px;color:var(--ink-2)}
+.list-check svg{margin-top:2px}
+.card-dark{background:var(--ink);border-color:var(--ink);color:var(--white)}
+.card-dark h3{color:var(--white)}
+.card-dark li{color:var(--line)}
+
+/* tabs */
+.tabs{display:inline-flex;align-self:flex-start;gap:4px;padding:4px;border-radius:9999px;background:var(--tint)}
+.tab{display:inline-flex;align-items:center;min-height:44px;padding:8px 24px;border:0;border-radius:9999px;cursor:pointer;font-family:inherit;font-size:16px;line-height:24px;font-weight:600;background:transparent;color:var(--ink-2);transition:background-color 300ms var(--ease),color 300ms var(--ease)}
+.tab[aria-selected="true"]{background:var(--ink);color:var(--white)}
+.tab:active{transform:scale(.98)}
+
+/* tagline reveal */
+.tagline-wrap{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.word{color:rgba(9,5,38,.28);transition:color 500ms var(--ease)}
+.word.on{color:var(--ink)}
+
+/* steps */
+.num{width:40px;height:40px;border-radius:9999px;background:var(--ink);color:var(--white);display:flex;align-items:center;justify-content:center;font-size:16px;line-height:24px;font-weight:600}
+
+/* safety */
+.safety-row{display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start}
+.safety-row > div{flex:1 1 320px;min-width:0}
+.safety-list{flex:1 1 480px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.safety-list li{display:flex;gap:16px;align-items:center;padding:16px 24px;border:1px solid var(--line);border-radius:16px;font-size:16px;line-height:24px;font-weight:500}
+
+/* faq */
+.faq{max-width:800px;margin:0 auto}
+.faq-list{display:flex;flex-direction:column;gap:12px}
+details.q{background:var(--white);border:1px solid var(--line);border-radius:16px}
+summary{cursor:pointer;list-style:none}
+summary::-webkit-details-marker{display:none}
+details.q summary{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 24px;min-height:56px;font-size:16px;line-height:24px;font-weight:600}
+details.q p{padding:0 24px 24px}
+.chev{transition:transform 300ms var(--ease)}
+details[open] .chev{transform:rotate(180deg)}
+
+/* final cta */
+.cta{background:var(--ink);border-radius:32px;padding:64px 32px;display:flex;flex-direction:column;align-items:center;gap:24px;text-align:center}
+.cta h2{color:var(--white);max-width:680px}
+.cta p,.cta .note{color:var(--on-dark)}
+.cta-mark{width:48px;height:48px;border-radius:9999px;background:var(--white);display:flex;align-items:center;justify-content:center}
+.cta-mark span{width:16px;height:16px;border-radius:9999px;background:var(--ink)}
+
+/* footer */
+footer{border-top:1px solid var(--line);padding:48px 24px}
+.foot{display:flex;flex-wrap:wrap;gap:40px;justify-content:space-between}
+.foot > div{display:flex;flex-direction:column;gap:12px}
+.foot-a{flex:1 1 260px}.foot-b{flex:1 1 260px}.foot-c{flex:1 1 320px}
+.foot summary{font-size:14px;line-height:20px;font-weight:600;min-height:44px;display:flex;align-items:center}
+.foot details p{font-size:14px;line-height:20px;color:var(--ink-2);padding-bottom:12px}
+
+/* scroll reveal (only when JS is on) */
+.js .reveal{opacity:0;transform:translateY(32px);transition:opacity 700ms var(--ease),transform 700ms var(--ease)}
+.js .reveal.in{opacity:1;transform:none}
+
+@media (min-width:768px){
+  .heading-1{font-size:60px;line-height:60px}
+  .heading-2{font-size:48px;line-height:48px}
+  .tagline{font-size:48px;line-height:48px}
+  .sec{padding:96px 40px}
+  .navlinks{display:flex}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .btn,.tab,.chev,.navlink,.word{transition:opacity 200ms linear}
+  .btn:hover{transform:none}
+  .js .reveal{transform:none;transition:opacity 300ms linear}
+}
+</style>
+</head>
+<body>
+<a href="#main" class="skip">Skip to content</a>
+
+<header class="nav-wrap">
+  <nav class="nav" aria-label="Main">
+    <a href="#top" class="brand" aria-label="Spot Rides home"><span class="dot-logo" aria-hidden="true"><span></span></span>Spot Rides</a>
+    <div class="navlinks">
+      <a href="#how" class="navlink">How it works</a>
+      <a href="#safety" class="navlink">Safety</a>
+      <a href="#faq" class="navlink">FAQ</a>
+    </div>
+    <a href="https://docs.google.com/forms/d/e/1FAIpQLSdTU2K6IMo0SZ4jwQIvWdxQZqn27cfH1U1hAtJRsPj4nOs3gA/viewform" target="_blank" rel="noopener noreferrer" class="btn btn-sm">Join the pilot</a>
+  </nav>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section id="top" class="sec hero">
+    <div class="container hero-row">
+      <div class="hero-copy">
+        <span class="pill"><i aria-hidden="true"></i>Free pilot now open in Hyderabad</span>
+        <h1 class="heading-1 grad" style="max-width:680px">Same route to college?<br>Share the ride, split the fuel.</h1>
+        <p class="body-lead" style="max-width:680px">Spot Rides connects Hyderabad college students heading the same way. Hop on a bike or car with a verified student and pay just ₹3 per km toward fuel.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+          <a href="https://docs.google.com/forms/d/e/1FAIpQLSdTU2K6IMo0SZ4jwQIvWdxQZqn27cfH1U1hAtJRsPj4nOs3gA/viewform" target="_blank" rel="noopener noreferrer" class="btn btn-md btn-dark">
+            Join the free pilot
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+          </a>
+          <span class="caption-2">Takes two minutes</span>
+        </div>
+        <div class="proof body-5">
+          <span><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>College ID verified</span>
+          <span><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Women only rides</span>
+          <span><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>Free to join</span>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="phone" role="img" aria-label="A Spot Rides WhatsApp route group showing a bike ride offer from Uppal, a ride request from Nagole and a confirmed match">
+          <div class="phone-in">
+            <div class="chat-head">
+              <span class="av" aria-hidden="true"><span></span></span>
+              <div class="stack">
+                <span style="font-size:14px;line-height:20px;font-weight:600">Uppal → College</span>
+                <span class="caption-5">Spot Rides route group</span>
+              </div>
+            </div>
+            <div class="chat">
+              <div class="bubble b-in"><span class="who">Ravi K.</span><span class="msg">OFFER | Bike | Uppal 7:45 AM → College | 1 seat | ₹30</span><span class="time">7:02 AM</span></div>
+              <div class="bubble b-out"><span class="who">Sneha P.</span><span class="msg">NEED | Nagole 7:50 AM → College | Bike/Car</span><span class="time">7:05 AM</span></div>
+              <div class="bubble b-in"><span class="who">Arjun M.</span><span class="msg">OFFER | Car | LB Nagar 7:30 AM → College | 3 seats | ₹36</span><span class="time">7:09 AM</span></div>
+              <div class="matched"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C6F135" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>MATCHED | Ravi + Sneha</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Problem to solution -->
+  <section class="sec tint reveal">
+    <div class="container stack" style="gap:48px">
+      <div class="head">
+        <span class="eyebrow">The daily commute</span>
+        <h2 class="heading-2">Your ride to college costs too much and takes too long</h2>
+      </div>
+      <div class="grid-cards">
+        <div class="card">
+          <h3 class="heading-6">Today</h3>
+          <ul class="list-check">
+            <li><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B4233C" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>Auto and cab fares that add up every single day</li>
+            <li><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B4233C" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>Crowded buses that run on their timings, not yours</li>
+            <li><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#B4233C" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>Classmates from your area riding past with an empty seat</li>
+          </ul>
+        </div>
+        <div class="card card-dark">
+          <h3 class="heading-6">With Spot Rides</h3>
+          <ul class="list-check">
+            <li><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C6F135" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Pay ₹3 per km toward fuel. A 10 km ride is ₹30.</li>
+            <li><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C6F135" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Leave at your college time with a student on your route</li>
+            <li><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C6F135" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>Every rider is a verified student from your college</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Benefits -->
+  <section class="sec reveal">
+    <div class="container stack" style="gap:40px">
+      <div class="head">
+        <span class="eyebrow">Why students join</span>
+        <h2 class="heading-2">Built for both sides of the ride</h2>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Benefits">
+        <button type="button" class="tab" role="tab" id="tab-ride" aria-selected="true" aria-controls="panel-ride">I need a ride</button>
+        <button type="button" class="tab" role="tab" id="tab-vehicle" aria-selected="false" aria-controls="panel-vehicle" tabindex="-1">I have a vehicle</button>
+      </div>
+
+      <div class="grid-cards" role="tabpanel" id="panel-ride" aria-labelledby="tab-ride">
+        <div class="card">
+          <span class="icon-tile" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 8h6M9 11h6M13 8c0 4-4 3-4 3l4 5"/></svg></span>
+          <h3 class="heading-6">Pay ₹3 per km, not a full fare</h3>
+          <p class="body-3">You share fuel with someone already heading your way. A 10 km ride costs ₹30, paid to the rider over UPI.</p>
+        </div>
+        <div class="card">
+          <span class="icon-tile" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg></span>
+          <h3 class="heading-6">Only verified students</h3>
+          <p class="body-3">Every member's college ID is checked before they join a route group.</p>
+        </div>
+        <div class="card">
+          <span class="icon-tile" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg></span>
+          <h3 class="heading-6">Women only rides</h3>
+          <p class="body-3">Choose to ride only with women students. Your choice, every time.</p>
+        </div>
+      </div>
+
+      <div class="grid-cards" role="tabpanel" id="panel-vehicle" aria-labelledby="tab-vehicle" hidden>
+        <div class="card">
+          <span class="icon-tile" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v16"/><path d="M3 21h13"/><path d="M15 9h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0V8l-3-3"/></svg></span>
+          <h3 class="heading-6">Cut your fuel bill</h3>
+          <p class="body-3">Take one student on your route and they share the petrol for the trip you already make.</p>
+        </div>
+        <div class="card">
+          <span class="icon-tile" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.5 3-5.5 6.5-5.5s6.5 2 6.5 5.5"/><path d="M16 11l2 2 4-4"/></svg></span>
+          <h3 class="heading-6">You choose who rides</h3>
+          <p class="body-3">See who is asking and where they start before you accept anyone.</p>
+        </div>
+        <div class="card">
+          <span class="icon-tile" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h8a3 3 0 0 0 0-6H8a3 3 0 0 1 0-6h8"/></svg></span>
+          <h3 class="heading-6">No detours</h3>
+          <p class="body-3">You only match with students already on your way to the same college.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tagline reveal -->
+  <section class="sec" aria-label="Spot Rides tagline">
+    <div class="tagline-wrap" id="tagline">
+      <p class="tagline"><span class="word">Same</span> <span class="word">area.</span> <span class="word">Same</span> <span class="word">college.</span> <span class="word">Same</span> <span class="word">time.</span></p>
+      <p class="tagline"><span class="word">Why</span> <span class="word">ride</span> <span class="word">alone?</span></p>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how" class="sec tint reveal">
+    <div class="container stack" style="gap:48px">
+      <div class="head">
+        <span class="eyebrow">How it works</span>
+        <h2 class="heading-2">From sign up to your first ride in three steps</h2>
+      </div>
+      <ol class="grid-cards">
+        <li class="card"><span class="num">1</span><h3 class="heading-6">Sign up in two minutes</h3><p class="body-3">Tell us your area, your college and the times you usually travel.</p></li>
+        <li class="card"><span class="num">2</span><h3 class="heading-6">Get verified</h3><p class="body-3">A student volunteer checks your college ID on WhatsApp and adds you to your route group.</p></li>
+        <li class="card"><span class="num">3</span><h3 class="heading-6">Post or pick a ride</h3><p class="body-3">Meet at the pickup point and split the fuel cost over UPI. That is it.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- Safety -->
+  <section id="safety" class="sec reveal">
+    <div class="container safety-row">
+      <div class="stack" style="gap:16px">
+        <span class="eyebrow">Safety first</span>
+        <h2 class="heading-2">Every ride is with someone from your campus</h2>
+        <p class="body-lead">Getting on someone else's bike is a big ask. These rules apply to every member, on every ride.</p>
+      </div>
+      <ul class="safety-list">
+        <li><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M6 16c.5-1.5 1.7-2 3-2s2.5.5 3 2"/><path d="M14 10h4M14 13h3"/></svg>College ID verification for every member</li>
+        <li><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Women only ride option</li>
+        <li><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/></svg>Live location shared on every ride</li>
+        <li><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4h11l-2 4 2 4H5"/></svg>Report a problem to an admin, and rule breakers are removed</li>
+        <li><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 8h6M9 11h6M13 8c0 4-4 3-4 3l4 5"/></svg>Fuel cost sharing only, so nobody rides for profit</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="sec tint reveal">
+    <div class="faq stack" style="gap:40px">
+      <div class="head">
+        <span class="eyebrow">FAQ</span>
+        <h2 class="heading-2">Questions students ask us</h2>
+      </div>
+      <div class="faq-list">
+        <details class="q"><summary><span>Is it free?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">Joining is free. You only share the fuel cost directly with the student you ride with.</p></details>
+        <details class="q"><summary><span>Who can join?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">Students of our pilot colleges in Hyderabad. We add more colleges as routes fill up.</p></details>
+        <details class="q"><summary><span>How do you verify students?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">A student volunteer checks your college ID on WhatsApp before adding you to a route group.</p></details>
+        <details class="q"><summary><span>How much do I pay per ride?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">₹3 per km, paid directly to the rider over UPI. A 10 km ride costs ₹30.</p></details>
+        <details class="q"><summary><span>Is this a taxi service?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">No. Students share rides they are already taking and split the fuel cost. Nobody earns a profit.</p></details>
+        <details class="q"><summary><span>Is it safe for women?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">You can choose women only rides, and every member is a verified student.</p></details>
+        <details class="q"><summary><span>What if my ride cancels?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">The rider posts a cancel update in the group so you can pick another ride on your route.</p></details>
+        <details class="q"><summary><span>Do I need to install an app?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">No. The pilot runs entirely on WhatsApp.</p></details>
+        <details class="q"><summary><span>What happens to my data?</span><svg class="chev" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#090526" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></summary><p class="body-3">Your number is shared only with the riders you match with. Read the privacy policy at the bottom of this page.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="sec reveal">
+    <div class="container cta dark">
+      <span class="cta-mark" aria-hidden="true"><span></span></span>
+      <h2 class="heading-2">Be one of the first riders on your route</h2>
+      <p class="body-lead" style="max-width:560px">Join the free pilot. We will verify your college ID and add you to your route group on WhatsApp.</p>
+      <a href="https://docs.google.com/forms/d/e/1FAIpQLSdTU2K6IMo0SZ4jwQIvWdxQZqn27cfH1U1hAtJRsPj4nOs3gA/viewform" target="_blank" rel="noopener noreferrer" class="btn btn-md btn-lime">
+        Join the free pilot
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+      </a>
+      <span class="note" style="font-size:14px;line-height:20px">Free to join · Takes two minutes</span>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="container foot">
+    <div class="foot-a">
+      <span class="brand"><span class="dot-logo" aria-hidden="true"><span></span></span>Spot Rides</span>
+      <p class="caption-2" style="max-width:320px">A student carpooling community in Hyderabad. Not a taxi service.</p>
+      <p class="caption-5">© 2026 Spot Rides</p>
+    </div>
+    <div class="foot-b">
+      <span style="font-size:14px;line-height:20px;font-weight:600">Contact</span>
+      <a href="mailto:npranaysharma@gmail.com" style="font-size:14px;line-height:20px">npranaysharma@gmail.com</a>
+      <a href="mailto:thugninja4708@gmail.com" style="font-size:14px;line-height:20px">thugninja4708@gmail.com</a>
+    </div>
+    <div class="foot-c">
+      <details id="privacy">
+        <summary>Privacy policy</summary>
+        <p>We collect your name, WhatsApp number, college, area and travel timings only to match you with students on your route. Your number is shared only with riders you match with. We never sell your data. To see or delete your data, email us at either address above.</p>
+      </details>
+      <details id="terms">
+        <summary>Terms</summary>
+        <p>Spot Rides connects verified students who share rides they are already taking. Riders share fuel costs at ₹3 per km and nobody earns a profit. Riders must hold a valid licence and insurance and carry a helmet for any pillion. Members follow the group rules and travel at their own discretion. Anyone who breaks the rules is removed.</p>
+      </details>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var hasIO = 'IntersectionObserver' in window;
+
+  // Benefits tabs
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  function select(tab) {
+    tabs.forEach(function (t) {
+      var on = t === tab;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { select(t); });
+    t.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      var next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      select(next);
+      next.focus();
+    });
+  });
+
+  // Section reveals, once each
+  var reveals = document.querySelectorAll('.reveal');
+  if (reduce || !hasIO) {
+    Array.prototype.forEach.call(reveals, function (el) { el.classList.add('in'); });
+  } else {
+    var ro = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('in'); ro.unobserve(e.target); }
+      });
+    }, { threshold: 0.15 });
+    Array.prototype.forEach.call(reveals, function (el) { ro.observe(el); });
+  }
+
+  // Tagline: words light up one at a time as they cross the trigger line
+  var words = document.querySelectorAll('#tagline .word');
+  if (reduce || !hasIO) {
+    Array.prototype.forEach.call(words, function (w) { w.classList.add('on'); });
+  } else {
+    var wo = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('on'); wo.unobserve(e.target); }
+      });
+    }, { rootMargin: '0px 0px -40% 0px' });
+    Array.prototype.forEach.call(words, function (w) { wo.observe(w); });
+  }
+})();
+</script>
+</body>
+</html>
